@@ -7,18 +7,15 @@
             "type": "cppvsdbg",
             "request": "launch",
 
-            "program": "${command:cmake.launchTargetPath}",
-            "cwd": "${command:cmake.getLaunchTargetDirectory}",
+            "program": "${input:helloEarthProgram}",
+            "cwd": "${input:helloEarthDirectory}",
 
-            "args": [
-                "--image",
-                "${workspaceFolder}/../testdata/ref.tif"
-            ],
+            "args": [],
 
             "environment": [
                 {
                     "name": "PATH",
-                    "value": "${command:cmake.getLaunchTargetDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+                    "value": "${input:helloEarthDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
                 },
                 {
                     "name": "OSG_LIBRARY_PATH",
@@ -27,6 +24,65 @@
             ],
 
             "console": "integratedTerminal"
+        },
+
+        {
+            "name": "SingleLocalTIF Debug",
+            "type": "cppvsdbg",
+            "request": "launch",
+
+            "program": "${input:singleLocalTIFProgram}",
+            "cwd": "${input:singleLocalTIFDirectory}",
+
+            "args": [],
+
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "${input:singleLocalTIFDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+                },
+                {
+                    "name": "OSG_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                }
+            ],
+
+            "console": "integratedTerminal"
+        }
+    ],
+
+    "inputs": [
+        {
+            "id": "helloEarthProgram",
+            "type": "command",
+            "command": "cmake.launchTargetPath",
+            "args": {
+                "targetName": "HelloEarth"
+            }
+        },
+        {
+            "id": "helloEarthDirectory",
+            "type": "command",
+            "command": "cmake.getLaunchTargetDirectory",
+            "args": {
+                "targetName": "HelloEarth"
+            }
+        },
+        {
+            "id": "singleLocalTIFProgram",
+            "type": "command",
+            "command": "cmake.launchTargetPath",
+            "args": {
+                "targetName": "SingleLocalTIF"
+            }
+        },
+        {
+            "id": "singleLocalTIFDirectory",
+            "type": "command",
+            "command": "cmake.getLaunchTargetDirectory",
+            "args": {
+                "targetName": "SingleLocalTIF"
+            }
         }
     ]
 }

@@ -30,3 +30,5 @@ install(
     TARGETS HelloEarth
     RUNTIME DESTINATION bin
 )
+
+add_subdirectory(examples)

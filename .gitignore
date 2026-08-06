@@ -1,0 +1,23 @@
+# Local CMake user configuration
+CMakeUserPresets.json
+
+# Accidental in-source build directories
+/build/
+/install/
+/out/
+
+# Accidental local test data directory
+/testdata/
+
+# Visual Studio local files
+/.vs/
+*.user
+*.suo
+
+# Local caches and logs
+/.cache/
+*.log
+
+# Operating system generated files
+Thumbs.db
+.DS_Store

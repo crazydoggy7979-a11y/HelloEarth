@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+
+    "configurations": [
+        {
+            "name": "HelloEarth Debug",
+            "type": "cppvsdbg",
+            "request": "launch",
+
+            "program": "${command:cmake.launchTargetPath}",
+            "cwd": "${command:cmake.getLaunchTargetDirectory}",
+
+            "args": [
+                "--image",
+                "${workspaceFolder}/../testdata/ref.tif"
+            ],
+
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "${command:cmake.getLaunchTargetDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+                },
+                {
+                    "name": "OSG_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                }
+            ],
+
+            "console": "integratedTerminal"
+        }
+    ]
+}

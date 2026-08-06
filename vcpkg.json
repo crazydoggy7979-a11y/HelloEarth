@@ -1,0 +1,11 @@
+{
+    "name": "helloearth",
+    "version-string": "0.1.0",
+    "port-version": 1,
+    "description": "Simple osgEarth demo application",
+    "supports": "!(x86 | wasm32)",
+    "dependencies": [
+        "osgearth",
+        "gdal"
+    ]
+}

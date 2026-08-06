@@ -1,0 +1,37 @@
+{
+    "version": 3,
+
+    "configurePresets": [
+        {
+            "name": "windows-msvc",
+            "displayName": "Windows MSVC x64",
+            "description": "Build HelloEarth with Visual Studio 2022 and vcpkg",
+
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+
+            "binaryDir": "${sourceDir}/../build",
+            "installDir": "${sourceDir}/../install",
+
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        }
+    ],
+
+    "buildPresets": [
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "configurePreset": "windows-msvc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "configurePreset": "windows-msvc",
+            "configuration": "Release"
+        }
+    ]
+}

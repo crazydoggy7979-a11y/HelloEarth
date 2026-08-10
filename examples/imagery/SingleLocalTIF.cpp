@@ -14,6 +14,7 @@
 #include <gdal_priv.h>
 
 #include <HelloEarth/raster/RasterPreprocessor.h>
+#include <chrono>
 
 int main(int argc, char** argv)
 {
@@ -27,7 +28,11 @@ int main(int argc, char** argv)
     osg::ArgumentParser args(&argc, argv);
     osgViewer::Viewer viewer(args);
 
-    const std::string imagePath ="D:/work/projects/HelloEarthWorkspace/testdata/ref7.tif";
+    // viewer.setThreadingModel(
+    //     osgViewer::ViewerBase::SingleThreaded
+    // );
+
+    const std::string imagePath ="D:/work/projects/HelloEarthWorkspace/testdata/ref.tif";
     std::string preparedImagePath;
     // if (!checkSingleImage(imagePath, preparedImagePath))
     // {
@@ -49,8 +54,35 @@ int main(int argc, char** argv)
     imagery->setURL(
         preparedImagePath
     );
+    // imagery->setMinLevel(8);
+    // imagery->setSingleThreaded(true);
+    // imagery->setAsyncLoading(true);
+
+    const std::string globalImagePath ="D:/work/projects/HelloEarthWorkspace/testdata/NE1_HR_LC_SR_W/NE1_HR_LC_SR_W.tif";
+    std::string preparedGlobalImagePath;
+    // if (!checkSingleImage(globalImagePath, preparedGlobalImagePath))
+    // {
+    //     return -1;
+    // }
+
+    if (!HelloEarth::Raster::prepareRasterForLoading(globalImagePath, preparedGlobalImagePath))
+    {
+        return -1;
+    }
+
+    // 读取tif影像前需要先声明GDALImageLayer类型，setURL告诉其影像路径，之后将其添加到MapNode中，最后设置场景数据为MapNode。
+    auto globalImagery = new osgEarth::GDALImageLayer();
+    globalImagery->setURL(
+        preparedGlobalImagePath
+    );
+
+    auto imageryTMS = new osgEarth::TMSImageLayer();
+    imageryTMS->setURL("https://readymap.org/readymap/tiles/1.0.0/7/");
+
 
     auto mapNode = new osgEarth::MapNode();
+
+    mapNode->getMap()->addLayer(imageryTMS);
     // addLayer步骤执行时，会让imagery去打开影像，读取tif影像的信息，之后可以通过imagery->getStatus().isError()来判断是否成功打开影像。
     mapNode->getMap()->addLayer(imagery);
 
@@ -112,6 +144,34 @@ int main(int argc, char** argv)
         << " meters"
         << std::endl;
 
+
+    osgEarth::Viewpoint globalViewpoint;
+
+    globalViewpoint.setFocalPoint(
+        imageCenter
+    );
+
+    globalViewpoint.setHeading(
+        osgEarth::Angle(
+            0.0,
+            osgEarth::Units::DEGREES
+        )
+    );
+
+    globalViewpoint.setPitch(
+        osgEarth::Angle(
+            -90.0,
+            osgEarth::Units::DEGREES
+        )
+    );
+
+    globalViewpoint.setRange(
+        osgEarth::Distance(
+            2500000.0,
+            osgEarth::Units::METERS
+        )
+    );
+
     // 默认构造出来的是一个空的 Viewpoint，还没有实际观察目标。
     osgEarth::Viewpoint initialViewpoint;
     // initialViewpoint.setFocalPoint(imageCenter);
@@ -144,20 +204,75 @@ int main(int argc, char** argv)
         return -1;
     }
     
+    // mapNode->getMap()->removeLayer(imagery);   
+
     viewer.setSceneData(mapNode);
 
-    // 设置相机操纵器为 EarthManipulator，并将初始视点应用到相机上。
-    // 先给viewer设置一个EarthManipulator，然后使用setViewpoint方法将初始视点应用到相机上，确保程序启动时相机能够正确地观察到影像。
-    auto manipulator = new osgEarth::EarthManipulator(args);
+    auto manipulator =
+        new osgEarth::EarthManipulator(args);
+
     viewer.setCameraManipulator(manipulator);
+
     manipulator->setHomeViewpoint(
         initialViewpoint,
         0.0
     );
-    // manipulator->setViewpoint(
+
+    return viewer.run();
+
+    // // 设置相机操纵器为 EarthManipulator，并将初始视点应用到相机上。
+    // // 先给viewer设置一个EarthManipulator，然后使用setViewpoint方法将初始视点应用到相机上，确保程序启动时相机能够正确地观察到影像。
+    // auto manipulator = new osgEarth::EarthManipulator(args);
+    // viewer.setCameraManipulator(manipulator);
+    // manipulator->setHomeViewpoint(
     //     initialViewpoint,
     //     0.0
     // );
 
-    return viewer.run();
+    // // 创建窗口和OpenGL环境。
+    // // viewer.run()原本也会在内部执行realize。
+    // viewer.realize();
+
+    // // Viewer已经准备完成后，先立即进入全球视点。
+    // manipulator->setViewpoint(
+    //     globalViewpoint,
+    //     0.0
+    // );
+
+    // // 使用steady_clock记录全球视点开始显示的时间。
+    // // steady_clock不会受到系统时间调整的影响。
+    // const auto globalViewStartTime =
+    //     std::chrono::steady_clock::now();
+
+    // bool localFlightStarted = false;
+
+    // while (!viewer.done())
+    // {
+    //     if (!localFlightStarted)
+    //     {
+    //         const auto currentTime =
+    //             std::chrono::steady_clock::now();
+
+    //         const double elapsedSeconds =
+    //             std::chrono::duration<double>(
+    //                 currentTime - globalViewStartTime
+    //             ).count();
+
+    //         // 全球视点显示2秒后，只触发一次飞行动画。
+    //         if (elapsedSeconds >= 2.0)
+    //         {
+    //             manipulator->setViewpoint(
+    //                 initialViewpoint,
+    //                 5.0
+    //             );
+
+    //             localFlightStarted = true;
+    //         }
+    //     }
+
+    //     // 处理事件、更新场景并渲染一帧。
+    //     viewer.frame();
+    // }
+
+    // return 0;
 }

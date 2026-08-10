@@ -39,6 +39,42 @@
 
             // 在 VS Code 集成终端中显示程序输出。
             "console": "integratedTerminal"
+        },
+        {
+            // 显示在“运行和调试”下拉框中的名称。
+            "name": "SingleLocalDEM Debug",
+            // 使用适用于 Windows MSVC 程序的调试器。
+            "type": "cppvsdbg",
+            // 启动一个新进程，而不是附加到已有进程。
+            "request": "launch",
+
+            // 通过下方 inputs 查询 SingleLocalDEM.exe 的实际路径。
+            "program": "${input:SingleLocalDEMProgram}",
+            // 将 EXE 所在目录设置为当前工作目录 cwd。
+            "cwd": "${input:SingleLocalDEMDirectory}",
+
+            // 传给 main(argc, argv) 的命令行参数。
+            // 当前源码仍使用硬编码影像路径，所以暂时为空。
+            "args": [],
+
+            // 为被调试程序设置运行时环境变量。
+            "environment": [
+                {
+                    // 将 EXE 目录和 vcpkg Debug DLL 目录加入 PATH，
+                    // 方便 Windows 在运行时查找依赖 DLL。
+                    "name": "PATH",
+                    "value": "${input:SingleLocalDEMDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+                },
+                {
+                    // 告诉 OSG 到哪里寻找 Debug 版本的数据读取插件。
+                    // 如果将来升级 OSG，目录中的版本号可能需要同步修改。
+                    "name": "OSG_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                }
+            ],
+
+            // 在 VS Code 集成终端中显示程序输出。
+            "console": "integratedTerminal"
         }
     ],
 
@@ -65,6 +101,28 @@
             "command": "cmake.getLaunchTargetDirectory",
             "args": {
                 "targetName": "SingleLocalTIF"
+            }
+        },
+        {
+            // 该 id 由 ${input:SingleLocalDEMProgram} 引用。
+            "id": "SingleLocalDEMProgram",
+            // command 表示通过执行一条 VS Code 命令产生结果。
+            "type": "command",
+            // 构建并查询指定 CMake Target 的完整 EXE 路径。
+            "command": "cmake.launchTargetPath",
+            // 明确指定 Target，避免依赖当前手动选择的 Launch Target。
+            "args": {
+                "targetName": "SingleLocalDEM"
+            }
+        },
+        {
+            // 该 id 由 cwd 和 PATH 引用。
+            "id": "SingleLocalDEMDirectory",
+            "type": "command",
+            // 查询指定 Target 的 EXE 所在目录。
+            "command": "cmake.getLaunchTargetDirectory",
+            "args": {
+                "targetName": "SingleLocalDEM"
             }
         }
     ]

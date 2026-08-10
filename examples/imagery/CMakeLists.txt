@@ -32,6 +32,7 @@ target_link_libraries(
     PRIVATE
     osgEarth::osgEarth
     GDAL::GDAL
+    HelloEarth::Raster
 )
 
 # 执行 cmake --install 时，将该 EXE 安装到：

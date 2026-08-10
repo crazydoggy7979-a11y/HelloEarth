@@ -13,5 +13,8 @@ find_package(osgEarth CONFIG REQUIRED)
 # 查找 GDAL，并创建后续 Target 使用的 GDAL::GDAL。
 find_package(GDAL CONFIG REQUIRED)
 
-# 进入 examples 目录，继续加载各类学习示例。
+# 先构建可供其他 Target 复用的底层公共模块。
+add_subdirectory(src)
+
+# 再接入依赖底层公共模块的学习示例。
 add_subdirectory(examples)

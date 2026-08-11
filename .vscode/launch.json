@@ -75,6 +75,45 @@
 
             // 在 VS Code 集成终端中显示程序输出。
             "console": "integratedTerminal"
+        },
+        {
+            // 显示在“运行和调试”下拉框中的名称。
+            "name": "HelloEarthDesktop Debug",
+
+            // 使用 Windows MSVC 调试器。
+            "type": "cppvsdbg",
+            "request": "launch",
+
+            // 获取 HelloEarthDesktop.exe 的实际路径。
+            "program": "${input:helloEarthDesktopProgram}",
+
+            // 将可执行文件所在目录设为程序的当前工作目录。
+            "cwd": "${input:helloEarthDesktopDirectory}",
+
+            // 暂时不传递命令行参数。
+            "args": [],
+
+            "environment": [
+                {
+                    // 让 Windows 能找到 Qt Debug DLL。
+                    "name": "PATH",
+                    "value": "${input:helloEarthDesktopDirectory};${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/bin;${env:PATH}"
+                },
+                {
+                    // 告诉 Qt 到哪里寻找平台插件、图像插件和样式插件。
+                    "name": "QT_PLUGIN_PATH",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/Qt6/plugins"
+                },
+                {
+                    // 告诉 OSG 到哪里寻找 Debug 版本的数据读取插件
+                    // 以及 osgEarth 的 Rex 地形引擎插件。
+                    "name": "OSG_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                }
+            ],
+
+            // 在 VS Code 集成终端中显示程序输出。
+            "console": "integratedTerminal"
         }
     ],
 
@@ -123,6 +162,24 @@
             "command": "cmake.getLaunchTargetDirectory",
             "args": {
                 "targetName": "SingleLocalDEM"
+            }
+        },
+        {
+            // 查询 HelloEarthDesktop.exe 的完整路径。
+            "id": "helloEarthDesktopProgram",
+            "type": "command",
+            "command": "cmake.launchTargetPath",
+            "args": {
+                "targetName": "HelloEarthDesktop"
+            }
+        },
+        {
+            // 查询 HelloEarthDesktop.exe 所在目录。
+            "id": "helloEarthDesktopDirectory",
+            "type": "command",
+            "command": "cmake.getLaunchTargetDirectory",
+            "args": {
+                "targetName": "HelloEarthDesktop"
             }
         }
     ]

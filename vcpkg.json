@@ -6,6 +6,15 @@
     "supports": "!(x86 | wasm32)",
     "dependencies": [
         "osgearth",
-        "gdal"
+        "gdal",
+        {
+            "name": "qtbase",
+            "default-features": false,
+            "features": [
+                "widgets",
+                "opengl",
+                "png"
+            ]
+        }
     ]
 }

@@ -18,3 +18,5 @@ add_subdirectory(src)
 
 # 再接入依赖底层公共模块的学习示例。
 add_subdirectory(examples)
+
+add_subdirectory(apps)

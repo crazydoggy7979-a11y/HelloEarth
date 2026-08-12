@@ -20,6 +20,12 @@ private:
     // 可以为每个 Map 分别创建一个 MapTreeItems。
     struct MapTreeItems
     {
+        // osgEarth 为真实 Map 分配的运行时唯一编号。
+        //
+        // 后续收到图层信号时，可以通过这个编号判断
+        // 图层应当加入哪个 Map 的分类节点。
+        int mapUid = -1;
+
         // 代表一个 Map 的顶层节点。
         QTreeWidgetItem* mapItem = nullptr;
 
@@ -30,9 +36,19 @@ private:
         QTreeWidgetItem* elevationGroupItem = nullptr;
     };
 
-    // 为一个 Map 创建完整的图层树分类结构。
+    // 根据真实 Map 的 UID 和显示名称，
+    // 创建该 Map 在 Layers Dock 中对应的树结构。
     MapTreeItems createMapTreeItems(
+        int mapUid,
         const QString& mapDisplayName
+    );
+
+    // 在指定 Map 的 Imagery Layers 分类下，
+    // 创建一个与真实 osgEarth 影像图层关联的叶子节点。
+    void addImageryLayerTreeItem(
+        int mapUid,
+        int layerUid,
+        const QString& layerDisplayName
     );
 
     // 中央三维显示控件。

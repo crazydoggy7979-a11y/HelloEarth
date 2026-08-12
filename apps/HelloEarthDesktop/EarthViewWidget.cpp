@@ -8,10 +8,12 @@
 #include <QMouseEvent>
 #include <osgGA/GUIEventAdapter>
 #include <QWheelEvent>
+#include <QFileInfo>
 
 #include <osg/Camera>
 #include <osgEarth/GDAL>
 #include <osgEarth/GLUtils>
+#include <osgEarth/VisibleLayer>
 
 #include <HelloEarth/raster/RasterPreprocessor.h>
 
@@ -137,6 +139,74 @@ EarthViewWidget::~EarthViewWidget()
     }
 }
 
+bool EarthViewWidget::setLayerVisible(
+    int mapUid,
+    int layerUid,
+    bool visible
+)
+{
+    // MapNode 可能尚未完成创建，或者已经开始释放。
+    //
+    // 在这两种状态下都无法安全访问真实 Map。
+    if (!mapNode_ || !mapNode_->getMap())
+    {
+        return false;
+    }
+
+    osgEarth::Map* map =
+        mapNode_->getMap();
+
+    // 当前 EarthViewWidget 暂时只管理一个 Map。
+    //
+    // 先比较调用者传来的 Map UID，
+    // 避免把属于其他 Map 的图层操作错误地应用到当前 Map。
+    if (map->getUID() != mapUid)
+    {
+        return false;
+    }
+
+    // 根据 Layer UID 从真实 osgEarth Map 中查找图层。
+    //
+    // getLayerByUID() 返回的是通用 Layer 指针，
+    // 因为 Map 中可能同时存在影像、高程、模型等多种图层。
+    osgEarth::Layer* layer =
+        map->getLayerByUID(layerUid);
+
+    if (layer == nullptr)
+    {
+        // 没有找到对应 UID 的真实图层。
+        return false;
+    }
+
+    // 将通用 Layer 尝试转换为支持显隐控制的 VisibleLayer。
+    //
+    // dynamic_cast 会在运行时检查真实对象的类型：
+    // 如果该图层继承自 VisibleLayer，就返回有效指针；
+    // 如果不支持该类型，就返回 nullptr。
+    auto* visibleLayer =
+        dynamic_cast<osgEarth::VisibleLayer*>(
+            layer
+        );
+
+    if (visibleLayer == nullptr)
+    {
+        // 找到的图层不支持 VisibleLayer 提供的显隐接口。
+        return false;
+    }
+
+    // 修改真实 osgEarth 图层的显示状态。
+    visibleLayer->setVisible(visible);
+
+    // 请求 Qt 在合适的时机重新绘制三维窗口。
+    //
+    // 当前虽然已经有持续渲染定时器，
+    // 这里主动请求一次更新，可以明确表达：
+    // 图层状态修改后，画面需要刷新。
+    update();
+
+    return true;
+}
+
 void EarthViewWidget::initializeGL()
 {
     // 初始化当前 OpenGL Context 对应的函数入口。
@@ -242,10 +312,37 @@ void EarthViewWidget::initializeGL()
     // 创建 osgEarth 地图场景的根节点。
     mapNode_ = new osgEarth::MapNode();
 
+    // MapNode 创建完成后，它内部管理的 Map 也已经存在。
+    //
+    // getUID() 返回 osgEarth 为这个 Map 分配的运行时唯一编号。
+    // MainWindow 后续会使用这个编号，将图层树节点与真实 Map 对应起来。
+    const int mapUid =
+        mapNode_->getMap()->getUID();
+
+    // 发出“Map 已创建”信号。
+    //
+    // emit 不会创建新的 Map，也不会修改图层树；
+    // 它只负责把 Map UID 和显示名称通知给已经连接该信号的对象。
+    emit mapCreated(
+        mapUid,
+        QStringLiteral("Map 1")
+    );
+
     // 用户选择或程序预设的原始 TIFF 路径。
     const std::string globalImagerySourcePath =
         "D:/work/projects/HelloEarthWorkspace/testdata/"
         "NE1_HR_LC_SR_W/NE1_HR_LC_SR_W.tif";
+
+    // 从原始路径中提取文件名，用作 Layers Dock 的显示名称。
+    //
+    // 即使预处理过程最终决定让 osgEarth 加载 VRT，
+    // 界面中仍然显示用户最初选择的 TIFF 文件。
+    const QString globalImageryDisplayName =
+        QFileInfo(
+            QString::fromStdString(
+                globalImagerySourcePath
+            )
+        ).fileName();
 
     // 用于接收栅格预处理结束后真正应该加载的路径。
     //
@@ -280,7 +377,8 @@ void EarthViewWidget::initializeGL()
             new osgEarth::GDALImageLayer();
 
         globalImageryLayer->setName(
-            "Global Imagery"
+            globalImageryDisplayName
+                .toStdString()
         );
 
         // 必须使用预处理函数返回的最终路径，
@@ -310,6 +408,26 @@ void EarthViewWidget::initializeGL()
                 << "Global imagery opened successfully: "
                 << preparedGlobalImageryPath
                 << std::endl;
+
+            // 全球影像已经成功打开，并且已经加入真实的 osgEarth Map。
+            //
+            // 只有走到成功分支时才发送信号，
+            // 从而保证 Layers Dock 不会显示一个实际加载失败的图层。
+            emit imageryLayerAdded(
+                // 告诉 MainWindow：该影像属于哪个 Map。
+                mapNode_->getMap()->getUID(),
+
+                // 告诉 MainWindow：该叶子节点对应哪个真实 Layer。
+                globalImageryLayer->getUID(),
+
+                // 使用 osgEarth Layer 中保存的名称作为界面显示名称。
+                //
+                // getName() 返回 std::string，
+                // 而 Qt 信号参数要求 QString，因此在这里进行转换。
+                QString::fromStdString(
+                    globalImageryLayer->getName()
+                )
+            );
         }
     }
 

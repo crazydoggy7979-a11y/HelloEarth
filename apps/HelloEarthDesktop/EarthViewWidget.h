@@ -2,6 +2,7 @@
 
 #include <QOpenGLFunctions>
 #include <QOpenGLWidget>
+#include <QString>
 
 #include <osg/ref_ptr>
 #include <osgViewer/GraphicsWindow>
@@ -24,12 +25,61 @@ class EarthViewWidget
     : public QOpenGLWidget,
       protected QOpenGLFunctions
 {
+    Q_OBJECT
+
 public:
     // 创建三维显示控件。
     explicit EarthViewWidget(QWidget* parent = nullptr);
 
     // 释放 OSG Viewer 及其占用的 OpenGL 资源。
     ~EarthViewWidget() override;
+
+    // 根据 Map UID 和 Layer UID 设置真实 osgEarth 图层的显隐状态。
+    //
+    // mapUid：
+    // 用于确认本次操作针对的是当前 EarthViewWidget 管理的 Map。
+    //
+    // layerUid：
+    // 用于从 osgEarth::Map 中找到对应的真实 Layer。
+    //
+    // visible：
+    // true 表示显示图层，false 表示隐藏图层。
+    //
+    // 返回 true 表示成功找到并修改了图层；
+    // 返回 false 表示 Map 不匹配、图层不存在，
+    // 或者该图层不支持 VisibleLayer 的显隐接口。
+    bool setLayerVisible(
+        int mapUid,
+        int layerUid,
+        bool visible
+    );
+
+signals:
+    // osgEarth Map 创建成功后发出该信号。
+    //
+    // mapUid 是 osgEarth 为 Map 分配的运行时唯一编号；
+    // mapDisplayName 是该 Map 在 Layers Dock 中显示的名称。
+    void mapCreated(
+        int mapUid,
+        const QString& mapDisplayName
+    );
+
+    // 影像图层成功加入 osgEarth Map 后发出该信号。
+    //
+    // mapUid：
+    // 表示该影像属于哪个真实 Map。
+    //
+    // layerUid：
+    // osgEarth 为该图层分配的运行时唯一编号。
+    // 后续图层树叶子将通过它找到对应的真实 Layer。
+    //
+    // layerDisplayName：
+    // 图层在 Layers Dock 中显示的名称。
+    void imageryLayerAdded(
+        int mapUid,
+        int layerUid,
+        const QString& layerDisplayName
+    );
 
 protected:
     // OpenGL Context 创建完成后，由 Qt 调用。

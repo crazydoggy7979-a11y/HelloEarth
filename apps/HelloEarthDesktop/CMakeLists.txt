@@ -22,6 +22,9 @@ qt_add_executable(
 
     EarthViewWidget.h
     EarthViewWidget.cpp
+
+    LayerTreeWidget.h
+    LayerTreeWidget.cpp
 )
 
 # 声明 HelloEarthDesktop 使用哪些 Qt 模块。
@@ -47,6 +50,12 @@ target_link_libraries(
 
     # Desktop 启动时需要初始化 GDAL 驱动。
     GDAL::GDAL
+
+    # HelloEarth 的公共视点计算模块。
+    #
+    # 用于根据影像或 DEM 图层的数据范围，
+    # 计算能够完整观察该图层的 osgEarth::Viewpoint。
+    HelloEarth::Navigation
 )
 
 # 让 MSVC 按 UTF-8 解析源文件。

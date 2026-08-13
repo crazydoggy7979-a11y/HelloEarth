@@ -54,6 +54,66 @@ public:
         bool visible
     );
 
+    // 根据 Map UID 和 Layer UID，从当前 osgEarth Map 中
+    // 删除一个真实图层。
+    //
+    // 这个接口不区分影像图层和高程图层：
+    // 只要目标对象属于 osgEarth::Layer，都可以使用同一套删除流程。
+    //
+    // mapUid：
+    // 用于确认删除请求针对的是当前 EarthViewWidget 管理的 Map。
+    //
+    // layerUid：
+    // 用于从 Map 中找到需要删除的真实 osgEarth Layer。
+    //
+    // 返回 true 表示成功找到并删除图层；
+    // 返回 false 表示 Map 尚未初始化、Map UID 不匹配，
+    // 或者目标 Layer 已经不存在。
+    bool removeLayer(
+        int mapUid,
+        int layerUid
+    );
+
+    // 将一份本地栅格数据作为影像图层加入当前 osgEarth Map。
+    //
+    // sourcePath 是用户指定的原始数据路径，
+    // 例如通过文件选择窗口获得的 TIFF 路径。
+    //
+    // 函数内部将统一负责：
+    // 1. 检查当前 Map 是否已经初始化；
+    // 2. 执行栅格和金字塔预处理；
+    // 3. 确定真正加载的 TIFF 或 VRT 路径；
+    // 4. 创建并添加 GDALImageLayer；
+    // 5. 检查图层是否成功打开；
+    // 6. 发出 imageryLayerAdded 信号，通知 Layers Dock。
+    //
+    // 返回 true 表示影像成功加入 Map；
+    // 返回 false 表示路径无效、预处理失败、
+    // Map 尚未初始化或者 osgEarth 图层打开失败。
+    bool addImageLayer(
+        const QString& sourcePath
+    );
+
+    // 将一份本地栅格数据作为高程图层加入当前 osgEarth Map。
+    //
+    // sourcePath 是用户选择的原始 DEM 数据路径。
+    //
+    // 函数内部将统一负责：
+    // 1. 检查当前 Map 是否已经初始化；
+    // 2. 执行栅格和金字塔预处理；
+    // 3. 确定真正加载的 TIFF 或 VRT 路径；
+    // 4. 创建并添加 GDALElevationLayer；
+    // 5. 检查高程图层是否成功打开；
+    // 6. 计算图层范围对应的 Viewpoint；
+    // 7. 发出 elevationLayerAdded 信号，通知 Layers Dock。
+    //
+    // 返回 true 表示 DEM 成功加入 Map；
+    // 返回 false 表示路径无效、预处理失败、
+    // Map 尚未初始化或者 osgEarth 图层打开失败。
+    bool addElevationLayer(
+        const QString& sourcePath
+    );
+
 signals:
     // osgEarth Map 创建成功后发出该信号。
     //
@@ -76,6 +136,23 @@ signals:
     // layerDisplayName：
     // 图层在 Layers Dock 中显示的名称。
     void imageryLayerAdded(
+        int mapUid,
+        int layerUid,
+        const QString& layerDisplayName
+    );
+
+    // 高程图层成功加入 osgEarth Map 后发出该信号。
+    //
+    // mapUid：
+    // 表示该 DEM 属于哪个真实 Map。
+    //
+    // layerUid：
+    // osgEarth 为该高程图层分配的运行时唯一编号。
+    // 后续图层树叶子将通过它找到真实 ElevationLayer。
+    //
+    // layerDisplayName：
+    // 高程图层在 Layers Dock 中显示的名称。
+    void elevationLayerAdded(
         int mapUid,
         int layerUid,
         const QString& layerDisplayName

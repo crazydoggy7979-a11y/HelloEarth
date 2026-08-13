@@ -15,7 +15,7 @@ namespace HelloEarth::Navigation
 
         // 相机俯仰角，单位为度。
         // -90 表示垂直俯视。
-        double pitchDegrees = -90.0;
+        double pitchDegrees = -40.0;
 
         // 图层最大地面跨度与相机观察距离之间的比例。
         double rangeScale = 2.0;

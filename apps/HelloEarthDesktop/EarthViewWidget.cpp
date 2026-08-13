@@ -16,6 +16,7 @@
 #include <osgEarth/VisibleLayer>
 
 #include <HelloEarth/raster/RasterPreprocessor.h>
+#include <HelloEarth/navigation/ViewpointCalculator.h>
 
 namespace
 {
@@ -46,8 +47,7 @@ namespace
 }
 
 EarthViewWidget::EarthViewWidget(QWidget* parent)
-    : QOpenGLWidget(parent)
-{
+    : QOpenGLWidget(parent){
     // 设置希望 Qt 为该控件创建的 OpenGL Context 格式。
     QSurfaceFormat format;
 
@@ -139,11 +139,305 @@ EarthViewWidget::~EarthViewWidget()
     }
 }
 
-bool EarthViewWidget::setLayerVisible(
-    int mapUid,
-    int layerUid,
-    bool visible
-)
+bool EarthViewWidget::addImageLayer(const QString& sourcePath)
+{
+    // 空路径通常表示用户没有选择文件，
+    // 或者文件选择窗口被取消。
+    if (sourcePath.isEmpty())
+    {
+        std::cerr
+            << "Cannot add imagery: source path is empty."
+            << std::endl;
+
+        return false;
+    }
+
+    // MapNode 必须已经初始化完成。
+    //
+    // 如果在 initializeGL() 创建 MapNode 之前调用该函数，
+    // 当前还不存在能够接收图层的 osgEarth Map。
+    if (!mapNode_ || !mapNode_->getMap())
+    {
+        std::cerr
+            << "Cannot add imagery: map is not initialized."
+            << std::endl;
+
+        return false;
+    }
+
+    // 将 Qt 字符串转换为 UTF-8 编码的 std::string。
+    //
+    // Qt 的文件选择窗口和拖放事件提供 QString；
+    // 当前栅格预处理模块接收的是 std::string。
+    const std::string sourcePathString =
+        sourcePath.toUtf8().toStdString();
+
+    // 从用户选择的原始路径中提取文件名。
+    //
+    // 即使预处理最终让 osgEarth 读取一个隔离 VRT，
+    // Layers Dock 仍然显示用户最初选择的数据文件名。
+    const QString layerDisplayName =
+        QFileInfo(sourcePath).fileName();
+
+    // 接收预处理后真正应该交给 osgEarth 的路径。
+    //
+    // 它可能仍然是原始 TIFF，
+    // 也可能是程序为内部金字塔问题生成的 VRT。
+    std::string preparedImagePath;
+
+    // 执行已有的栅格预处理闭环：
+    //
+    // 1. 检查栅格基本信息；
+    // 2. 检查内部或外部金字塔；
+    // 3. 必要时构建外部 OVR；
+    // 4. 必要时创建隔离 VRT；
+    // 5. 返回最终允许 osgEarth 加载的路径。
+    const bool imagePrepared =
+        HelloEarth::Raster::prepareRasterForLoading(
+            sourcePathString,
+            preparedImagePath
+        );
+
+    if (!imagePrepared)
+    {
+        std::cerr
+            << "Image preprocessing failed: "
+            << sourcePathString
+            << std::endl;
+
+        return false;
+    }
+
+    // 使用 osg::ref_ptr 暂时持有新图层。
+    //
+    // Map 添加成功后也会持有该图层；
+    // 如果中途失败，ref_ptr 可以安全管理对象生命周期。
+    osg::ref_ptr<osgEarth::GDALImageLayer> imageryLayer =
+        new osgEarth::GDALImageLayer();
+
+    // osgEarth 内部图层名称与 Layers Dock 显示名称保持一致。
+    //
+    // 这里使用用户最初选择的文件名，而不是自动生成的 VRT 文件名。
+    imageryLayer->setName(
+        layerDisplayName
+            .toUtf8()
+            .toStdString()
+    );
+
+    // 真正的数据地址必须使用预处理结果。
+    imageryLayer->setURL(
+        preparedImagePath
+    );
+
+    // 将图层加入当前真实 osgEarth Map。
+    //
+    // addLayer() 会触发图层打开和数据源初始化。
+    osgEarth::Map* map =
+        mapNode_->getMap();
+
+    map->addLayer(
+        imageryLayer.get()
+    );
+
+    // 检查 osgEarth 是否成功打开最终数据源。
+    if (imageryLayer->getStatus().isError())
+    {
+        std::cerr
+            << "Failed to open prepared image: "
+            << imageryLayer->getStatus().toString()
+            << std::endl;
+
+        // 从 Map 中移除打开失败的图层，
+        // 避免无效 Layer 留在地图的图层集合中。
+        map->removeLayer(
+            imageryLayer.get()
+        );
+
+        return false;
+    }
+
+    std::cout
+        << "Image opened successfully: "
+        << preparedImagePath
+        << std::endl;
+
+    // 根据已经成功打开的影像图层数据范围，
+    // 计算能够完整观察该图层的合适 Viewpoint。
+    //
+    // GDALImageLayer 继承自 TileLayer，
+    // 因此可以直接交给公共视点计算模块。
+    const auto layerViewpoint =
+        HelloEarth::Navigation::calculateInitialViewpoint(
+            *imageryLayer
+        );
+
+    if (!layerViewpoint)
+    {
+        // 影像本身已经成功加入 Map；
+        // 这里只是无法根据图层范围计算有效视点，
+        // 因此不把整个图层加载过程判定为失败。
+        std::cerr
+            << "Image opened, but its viewpoint "
+            << "could not be calculated: "
+            << sourcePathString
+            << std::endl;
+    }
+    else
+    {
+        std::cout
+            << "Calculated image viewpoint: "
+            << layerViewpoint->toString()
+            << std::endl;
+
+        // EarthManipulator 只有在 Viewer 初始化阶段后半段
+        // 才会被创建并保存到 manipulator_。
+        //
+        // 程序启动时加载默认全球影像，manipulator_ 仍为空，
+        // 因此不会在这里强制修改初始相机。
+        //
+        // 用户后续通过菜单加载影像时，manipulator_ 已经存在，
+        // 此时让相机平滑移动到新影像的数据范围。
+        if (manipulator_)
+        {
+            manipulator_->setViewpoint(
+                *layerViewpoint,
+
+                // 从当前观察状态移动到目标 Viewpoint
+                // 所使用的动画时间，单位为秒。
+                0.5
+            );
+        }
+    }
+
+    // 只有真实图层成功加入 Map 后，
+    // 才通知 MainWindow 创建 Layers Dock 叶子节点。
+    emit imageryLayerAdded(
+        map->getUID(),
+        imageryLayer->getUID(),
+        layerDisplayName
+    );
+
+    // 明确请求刷新三维窗口。
+    //
+    // 当前定时器本来也会持续刷新，
+    // 这里用于表达“地图内容发生变化，需要显示新结果”。
+    update();
+
+    return true;
+}
+
+bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
+{
+    // 1. 路径为空时无法加载数据。
+    if (sourcePath.isEmpty())
+    {
+        qWarning() << "Cannot add elevation layer: the source path is empty.";
+        return false;
+    }
+
+    // 2. 高程图层最终必须加入 Map。
+    //    如果 MapNode 尚未创建，说明 osgEarth 场景还没有初始化完成。
+    if (!mapNode_ || !mapNode_->getMap())
+    {
+        qWarning() << "Cannot add elevation layer: MapNode is not ready.";
+        return false;
+    }
+
+    // 3. osgEarth 和底层 GDAL 使用 std::string 路径。
+    //    通过 UTF-8 转换，尽量兼容包含中文的文件路径。
+    const std::string sourcePathString =
+        sourcePath.toUtf8().toStdString();
+
+    // 4. 图层树中显示原始 DEM 文件名。
+    //    即使预处理后实际加载的是 VRT，也不让用户看到内部代理文件名。
+    const QString layerDisplayName =
+        QFileInfo(sourcePath).fileName();
+
+    // 5. 在交给 osgEarth 之前，先执行我们已有的栅格预处理流程。
+    //    这里可能检查或构建金字塔，也可能返回一个隔离用的 VRT 路径。
+    std::string preparedElevationPath;
+
+    if (!HelloEarth::Raster::prepareRasterForLoading(
+            sourcePathString,
+            preparedElevationPath))
+    {
+        qWarning() << "Elevation preprocessing failed:"
+                   << sourcePath;
+        return false;
+    }
+
+    // 6. 创建 osgEarth 的 GDAL 高程图层。
+    //    ImageLayer 提供影像颜色，而 ElevationLayer 提供地表高度。
+    osg::ref_ptr<osgEarth::GDALElevationLayer> elevationLayer =
+        new osgEarth::GDALElevationLayer();
+
+    // 对外仍使用原始 DEM 文件名作为图层名称。
+    elevationLayer->setName(
+        layerDisplayName.toUtf8().toStdString());
+
+    // 实际读取预处理后确定的 TIFF 或 VRT。
+    elevationLayer->setURL(preparedElevationPath);
+
+    osgEarth::Map* map = mapNode_->getMap();
+
+    // 7. 将高程图层加入 Map。
+    //    加入之后，地形引擎才会开始读取 DEM 并构建有起伏的地表。
+    map->addLayer(elevationLayer.get());
+
+    // 8. addLayer 后检查状态。
+    //    某些错误只有图层加入 Map、开始初始化后才会暴露。
+    if (elevationLayer->getStatus().isError())
+    {
+        qWarning() << "Failed to add elevation layer:"
+                   << sourcePath
+                   << QString::fromStdString(
+                          elevationLayer->getStatus().message());
+
+        // 加载失败时，把无效图层从 Map 中移除。
+        map->removeLayer(elevationLayer.get());
+        return false;
+    }
+
+    qDebug() << "Elevation layer opened successfully:"
+             << sourcePath;
+
+    // 9. 根据 DEM 的地理范围计算适合观察该区域的视点。
+    const auto layerViewpoint =
+        HelloEarth::Navigation::calculateInitialViewpoint(
+            *elevationLayer);
+
+    if (!layerViewpoint)
+    {
+        // 视点计算失败不代表高程图层加载失败，
+        // 所以这里只报告警告，不移除图层。
+        qWarning() << "Unable to calculate elevation viewpoint:"
+                   << sourcePath;
+    }
+    else if (manipulator_)
+    {
+        // 用 1.5 秒平滑飞行到 DEM 所在区域。
+        manipulator_->setViewpoint(
+            *layerViewpoint,
+            0.5
+        );
+    }
+
+    // 10. 通知 MainWindow：
+    //     一个新的高程图层已经成功加入 osgEarth Map。
+    //     下一阶段 Layers Dock 会订阅该信号并创建对应树节点。
+    emit elevationLayerAdded(
+        map->getUID(),
+        elevationLayer->getUID(),
+        layerDisplayName
+    );
+
+    // 11. 请求 Qt 安排下一次 OpenGL 绘制。
+    update();
+
+    return true;
+}
+
+bool EarthViewWidget::setLayerVisible(int mapUid, int layerUid, bool visible)
 {
     // MapNode 可能尚未完成创建，或者已经开始释放。
     //
@@ -202,6 +496,57 @@ bool EarthViewWidget::setLayerVisible(
     // 当前虽然已经有持续渲染定时器，
     // 这里主动请求一次更新，可以明确表达：
     // 图层状态修改后，画面需要刷新。
+    update();
+
+    return true;
+}
+
+bool EarthViewWidget::removeLayer(
+    int mapUid,
+    int layerUid
+)
+{
+    // MapNode 可能尚未初始化完成，也可能正在被释放。
+    // 这时不能访问真实 osgEarth Map。
+    if (!mapNode_ || !mapNode_->getMap())
+    {
+        return false;
+    }
+
+    osgEarth::Map* map =
+        mapNode_->getMap();
+
+    // 当前 EarthViewWidget 只管理一个 Map。
+    //
+    // 先检查删除请求中的 Map UID，
+    // 防止误删另一个 Map 中具有相同 Layer UID 的图层。
+    if (map->getUID() != mapUid)
+    {
+        return false;
+    }
+
+    // 根据 Layer UID，从 Map 中查找真正的 osgEarth 图层。
+    //
+    // 这里获得的是通用 Layer 指针，
+    // 因此影像图层、高程图层以及未来的其他图层
+    // 都可以使用这套删除逻辑。
+    osgEarth::Layer* layer =
+        map->getLayerByUID(layerUid);
+
+    if (layer == nullptr)
+    {
+        // 图层可能已经被删除，或者传入的 UID 不正确。
+        return false;
+    }
+
+    // 从 osgEarth Map 中移除真实图层。
+    //
+    // Map 使用引用计数管理其中的 Layer。
+    // removeLayer() 会解除 Map 对该图层的持有关系，
+    // 所以这里不需要手动调用 delete。
+    map->removeLayer(layer);
+
+    // 图层结构发生变化后，请求 Qt 重新绘制三维窗口。
     update();
 
     return true;
@@ -328,107 +673,26 @@ void EarthViewWidget::initializeGL()
         QStringLiteral("Map 1")
     );
 
-    // 用户选择或程序预设的原始 TIFF 路径。
-    const std::string globalImagerySourcePath =
-        "D:/work/projects/HelloEarthWorkspace/testdata/"
-        "NE1_HR_LC_SR_W/NE1_HR_LC_SR_W.tif";
-
-    // 从原始路径中提取文件名，用作 Layers Dock 的显示名称。
+    // 当前程序启动时默认加载的本地全球影像。
     //
-    // 即使预处理过程最终决定让 osgEarth 加载 VRT，
-    // 界面中仍然显示用户最初选择的 TIFF 文件。
-    const QString globalImageryDisplayName =
-        QFileInfo(
-            QString::fromStdString(
-                globalImagerySourcePath
-            )
-        ).fileName();
-
-    // 用于接收栅格预处理结束后真正应该加载的路径。
-    //
-    // 正常情况下可能仍然是原始 TIFF；
-    // 如果内部金字塔检查失败，则也可能返回隔离后的 VRT 路径。
-    std::string preparedGlobalImageryPath;
-
-    // 在创建 GDALImageLayer 之前完成：
-    // 1. TIFF 基础有效性检查；
-    // 2. 外部或内部金字塔检查；
-    // 3. 必要时构建外部 OVR；
-    // 4. 必要时创建隔离 VRT；
-    // 5. 返回最终允许 osgEarth 加载的路径。
-    const bool globalImageryPrepared =
-        HelloEarth::Raster::prepareRasterForLoading(
-            globalImagerySourcePath,
-            preparedGlobalImageryPath
+    // 默认底图与后续菜单选择、文件拖入的影像，
+    // 都统一经过 addImageLayer() 完成预处理、创建图层、
+    // 状态检查以及 Layers Dock 通知。
+    const QString defaultGlobalImageryPath =
+        QStringLiteral(
+            "D:/work/projects/HelloEarthWorkspace/testdata/"
+            "NE1_HR_LC_SR_W/NE1_HR_LC_SR_W.tif"
         );
 
-    if (!globalImageryPrepared)
+    // 通过统一影像加载接口添加默认全球底图。
+    //
+    // 如果加载失败，addImageLayer() 会返回 false；
+    // 当前先保留空 Map，让桌面程序仍然可以正常启动。
+    if (!addImageLayer(defaultGlobalImageryPath))
     {
         std::cerr
-            << "Global imagery preprocessing failed: "
-            << globalImagerySourcePath
+            << "Failed to load the default global imagery."
             << std::endl;
-    }
-    else
-    {
-        // 只有影像及其金字塔预处理成功后，
-        // 才创建并添加 osgEarth 影像图层。
-        auto* globalImageryLayer =
-            new osgEarth::GDALImageLayer();
-
-        globalImageryLayer->setName(
-            globalImageryDisplayName
-                .toStdString()
-        );
-
-        // 必须使用预处理函数返回的最终路径，
-        // 不能继续固定使用原始 TIFF 路径。
-        globalImageryLayer->setURL(
-            preparedGlobalImageryPath
-        );
-
-        mapNode_->getMap()->addLayer(
-            globalImageryLayer
-        );
-
-        if (globalImageryLayer->getStatus().isError())
-        {
-            std::cerr
-                << "Failed to open prepared global imagery: "
-                << globalImageryLayer->getStatus().toString()
-                << std::endl;
-
-            mapNode_->getMap()->removeLayer(
-                globalImageryLayer
-            );
-        }
-        else
-        {
-            std::cout
-                << "Global imagery opened successfully: "
-                << preparedGlobalImageryPath
-                << std::endl;
-
-            // 全球影像已经成功打开，并且已经加入真实的 osgEarth Map。
-            //
-            // 只有走到成功分支时才发送信号，
-            // 从而保证 Layers Dock 不会显示一个实际加载失败的图层。
-            emit imageryLayerAdded(
-                // 告诉 MainWindow：该影像属于哪个 Map。
-                mapNode_->getMap()->getUID(),
-
-                // 告诉 MainWindow：该叶子节点对应哪个真实 Layer。
-                globalImageryLayer->getUID(),
-
-                // 使用 osgEarth Layer 中保存的名称作为界面显示名称。
-                //
-                // getName() 返回 std::string，
-                // 而 Qt 信号参数要求 QString，因此在这里进行转换。
-                QString::fromStdString(
-                    globalImageryLayer->getName()
-                )
-            );
-        }
     }
 
     // 将 MapNode 设置为 Viewer 要渲染的场景数据。
@@ -611,9 +875,7 @@ void EarthViewWidget::mouseMoveEvent(
     event->accept();
 }
 
-void EarthViewWidget::mouseReleaseEvent(
-    QMouseEvent* event
-)
+void EarthViewWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (!graphicsWindow_)
     {

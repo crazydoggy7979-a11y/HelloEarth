@@ -3,7 +3,7 @@
 #include <QMainWindow>
 
 class EarthViewWidget;
-class QTreeWidget;
+class LayerTreeWidget;
 
 class QString;
 class QTreeWidgetItem;
@@ -51,11 +51,36 @@ private:
         const QString& layerDisplayName
     );
 
+    // 在指定 Map 的 Elevation Layers 分类下，
+    // 创建一个与真实 osgEarth 高程图层关联的叶子节点。
+    //
+    // mapUid：高程图层所属 Map 的唯一编号。
+    // layerUid：真实 osgEarth ElevationLayer 的唯一编号。
+    // layerDisplayName：显示在 Layers Dock 中的图层名称。
+    void addElevationLayerTreeItem(
+        int mapUid,
+        int layerUid,
+        const QString& layerDisplayName
+    );
+
+    // 删除一个图层树叶子及其关联的真实 osgEarth 图层。
+    //
+    // item 必须是 ImageryLayer 或 ElevationLayer 类型的叶子节点。
+    // 函数会从节点内部读取 Map UID 和 Layer UID，
+    // 先请求 EarthViewWidget 删除真实图层；
+    // 真实图层删除成功后，才会删除界面中的树节点。
+    //
+    // Map、Imagery Layers 和 Elevation Layers 等结构节点
+    // 不允许通过这个函数删除。
+    void removeLayerTreeItem(
+        QTreeWidgetItem* item
+    );
+
     // 中央三维显示控件。
     EarthViewWidget* earthViewWidget_ = nullptr;
 
     // Layers Dock 中的图层树。
-    QTreeWidget* layerTree_ = nullptr;
+    LayerTreeWidget* layerTree_ = nullptr;
 
     // 当前默认 Map 对应的树节点集合。
     //

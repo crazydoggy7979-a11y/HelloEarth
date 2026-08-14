@@ -76,6 +76,29 @@ private:
         QTreeWidgetItem* item
     );
 
+    // 处理 Layers Dock 中真实图层节点完成拖动后的顺序同步。
+    //
+    // item：
+    // 本次被移动的图层树节点。
+    //
+    // oldIndex：
+    // 节点移动前在所属分类中的 Qt 索引。
+    //
+    // newIndex：
+    // 节点移动后在所属分类中的 Qt 索引。
+    //
+    // 函数将负责：
+    // 1. 验证被移动节点及其父分类；
+    // 2. 读取父分类所属的 Map UID；
+    // 3. 按界面从上到下收集该分类的全部 Layer UID；
+    // 4. 调用 EarthViewWidget::synchronizeLayerOrder()；
+    // 5. 同步失败时，将 Qt 节点恢复到 oldIndex。
+    void handleLayerItemMoved(
+        QTreeWidgetItem* item,
+        int oldIndex,
+        int newIndex
+    );
+
     // 中央三维显示控件。
     EarthViewWidget* earthViewWidget_ = nullptr;
 

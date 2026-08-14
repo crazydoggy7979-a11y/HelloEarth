@@ -1,4 +1,6 @@
 #include "EarthViewWidget.h"
+#include <unordered_set>
+#include <cmath>
 
 #include <algorithm>
 #include <iostream>
@@ -229,100 +231,266 @@ bool EarthViewWidget::addImageLayer(const QString& sourcePath)
         preparedImagePath
     );
 
-    // 将图层加入当前真实 osgEarth Map。
-    //
-    // addLayer() 会触发图层打开和数据源初始化。
+    // 当前 Map 已经在函数前面验证过存在。
     osgEarth::Map* map =
         mapNode_->getMap();
 
-    map->addLayer(
-        imageryLayer.get()
+    // 在图层独立打开前，先使用当前 Map 的读取选项。
+    //
+    // 这样图层使用的插件、缓存和资源读取环境，
+    // 与之后正式加入 Map 时保持一致。
+    imageryLayer->setReadOptions(
+        map->getReadOptions()
     );
 
-    // 检查 osgEarth 是否成功打开最终数据源。
-    if (imageryLayer->getStatus().isError())
+    // 主动打开图层，但暂时不把它加入 Map。
+    //
+    // open() 会让 GDALImageLayer 读取数据源、空间参考和数据范围，
+    // 因此后面可以在图层尚未参与渲染时计算 Viewpoint。
+    const osgEarth::Status openStatus =
+        imageryLayer->open();
+
+    if (openStatus.isError())
     {
         std::cerr
-            << "Failed to open prepared image: "
-            << imageryLayer->getStatus().toString()
+            << "Failed to open prepared image before adding it to Map: "
+            << openStatus.toString()
             << std::endl;
-
-        // 从 Map 中移除打开失败的图层，
-        // 避免无效 Layer 留在地图的图层集合中。
-        map->removeLayer(
-            imageryLayer.get()
-        );
 
         return false;
     }
 
     std::cout
-        << "Image opened successfully: "
+        << "Image opened successfully before adding to Map: "
         << preparedImagePath
         << std::endl;
 
-    // 根据已经成功打开的影像图层数据范围，
-    // 计算能够完整观察该图层的合适 Viewpoint。
-    //
-    // GDALImageLayer 继承自 TileLayer，
-    // 因此可以直接交给公共视点计算模块。
+    // 图层虽然尚未加入 Map，但已经成功打开，
+    // 因此现在可以读取它的 DataExtent 并计算目标视点。
     const auto layerViewpoint =
         HelloEarth::Navigation::calculateInitialViewpoint(
             *imageryLayer
         );
 
+    // 把“正式加入 Map”的操作组织成一个局部函数。
+    //
+    // 默认全球影像可以立即调用它；
+    // 用户添加的局部影像则在相机飞行结束后调用它。
+    const auto attachImageryLayerToMap =
+        [this, imageryLayer, layerDisplayName]() -> bool
+        {
+            if (
+                !mapNode_ ||
+                !mapNode_->getMap()
+            )
+            {
+                std::cerr
+                    << "Cannot attach imagery layer: "
+                    << "Map is no longer available."
+                    << std::endl;
+
+                return false;
+            }
+
+            osgEarth::Map* currentMap =
+                mapNode_->getMap();
+
+            // 到达这一行时，局部影像才真正进入 Map，
+            // 并开始参与 Terrain Engine 和影像瓦片渲染。
+            currentMap->addLayer(
+                imageryLayer.get()
+            );
+
+            if (imageryLayer->getStatus().isError())
+            {
+                std::cerr
+                    << "Failed to attach opened image layer to Map: "
+                    << imageryLayer->getStatus().toString()
+                    << std::endl;
+
+                currentMap->removeLayer(
+                    imageryLayer.get()
+                );
+
+                return false;
+            }
+
+            std::cout
+                << "Image added to Map: "
+                << imageryLayer->getName()
+                << std::endl;
+
+            // 只有图层真正加入 Map 后，
+            // 才通知 MainWindow 创建对应的 Tree 节点。
+            emit this->imageryLayerAdded(
+                currentMap->getUID(),
+                imageryLayer->getUID(),
+                layerDisplayName
+            );
+
+            update();
+
+            return true;
+        };
+
+    // 无法计算视点时，不能执行“先飞行再加载”。
+    // 这种情况下保留容错能力，直接把图层加入 Map。
     if (!layerViewpoint)
     {
-        // 影像本身已经成功加入 Map；
-        // 这里只是无法根据图层范围计算有效视点，
-        // 因此不把整个图层加载过程判定为失败。
         std::cerr
             << "Image opened, but its viewpoint "
             << "could not be calculated: "
-            << sourcePathString
+            << preparedImagePath
             << std::endl;
+
+        return attachImageryLayerToMap();
     }
-    else
+
+    std::cout
+        << "Calculated image viewpoint before adding to Map: "
+        << layerViewpoint->toString()
+        << std::endl;
+
+    if (!layerViewpoint)
     {
-        std::cout
-            << "Calculated image viewpoint: "
-            << layerViewpoint->toString()
+        std::cerr
+            << "Image opened, but its viewpoint "
+            << "could not be calculated: "
+            << preparedImagePath
             << std::endl;
 
-        // EarthManipulator 只有在 Viewer 初始化阶段后半段
-        // 才会被创建并保存到 manipulator_。
-        //
-        // 程序启动时加载默认全球影像，manipulator_ 仍为空，
-        // 因此不会在这里强制修改初始相机。
-        //
-        // 用户后续通过菜单加载影像时，manipulator_ 已经存在，
-        // 此时让相机平滑移动到新影像的数据范围。
-        if (manipulator_)
-        {
-            manipulator_->setViewpoint(
-                *layerViewpoint,
+        return attachImageryLayerToMap();
+    }
 
-                // 从当前观察状态移动到目标 Viewpoint
-                // 所使用的动画时间，单位为秒。
-                0.5
+    std::cout
+        << "Calculated image viewpoint before adding to Map: "
+        << layerViewpoint->toString()
+        << std::endl;
+
+    // 根据该影像的推荐观察距离，
+    // 设置影像允许显示的最大相机距离。
+    //
+    // 局部影像在全球视角下会自动退出渲染；
+    // 回到影像附近后会自动重新显示。
+    if (layerViewpoint->range().isSet())
+    {
+        const double viewpointRangeMeters =
+            layerViewpoint
+                ->range()
+                ->as(
+                    osgEarth::Units::METERS
+                );
+
+        // 学习阶段先使用推荐观察距离的 4 倍。
+        //
+        // 以后可以把这个倍率放到程序设置中，
+        // 或者根据影像分辨率和范围进一步计算。
+        const double maximumVisibleRangeMeters =
+            viewpointRangeMeters * 4.0;
+
+        if (
+            std::isfinite(maximumVisibleRangeMeters) &&
+            maximumVisibleRangeMeters > 0.0
+        )
+        {
+            imageryLayer->setMaxVisibleRange(
+                static_cast<float>(
+                    maximumVisibleRangeMeters
+                )
             );
+
+            std::cout
+                << "Image maximum visible range: "
+                << maximumVisibleRangeMeters
+                << " meters"
+                << std::endl;
         }
     }
 
-    // 只有真实图层成功加入 Map 后，
-    // 才通知 MainWindow 创建 Layers Dock 叶子节点。
-    emit imageryLayerAdded(
-        map->getUID(),
-        imageryLayer->getUID(),
-        layerDisplayName
+    // 程序启动加载默认全球影像时，
+    // EarthManipulator 可能还没有创建。
+    //
+    // 此时没有“从当前视角飞向数据”的需求，直接加入 Map。
+    if (!manipulator_)
+    {
+        return attachImageryLayerToMap();
+    }
+
+    // 此时局部影像已经打开并计算出 Viewpoint，
+    // 但仍然没有加入 Map，也不会参与飞行过程中的图层调度。
+    manipulator_->setViewpoint(
+        *layerViewpoint,
+
+        // 相机飞行动画时间，单位为秒。
+        0.5
     );
 
-    // 明确请求刷新三维窗口。
+    // 创建一个临时定时器，定期检查相机飞行动画是否完成。
     //
-    // 当前定时器本来也会持续刷新，
-    // 这里用于表达“地图内容发生变化，需要显示新结果”。
+    // 这个定时器不会调用 viewer_->frame()。
+    // 现有 renderTimer_ 会继续通过 paintGL() 驱动 Viewer 渲染。
+    auto* viewpointWaitTimer =
+        new QTimer(this);
+
+    viewpointWaitTimer->setInterval(
+        16
+    );
+
+    viewpointWaitTimer->setTimerType(
+        Qt::PreciseTimer
+    );
+
+    connect(
+        viewpointWaitTimer,
+        &QTimer::timeout,
+        this,
+        [
+            this,
+            viewpointWaitTimer,
+            attachImageryLayerToMap
+        ]()
+        {
+            // true 表示 EarthManipulator 仍在执行
+            // setViewpoint() 创建的视点过渡动画。
+            if (
+                manipulator_ &&
+                manipulator_->isSettingViewpoint()
+            )
+            {
+                return;
+            }
+
+            // 相机飞行已经结束，停止检查。
+            viewpointWaitTimer->stop();
+
+            // 现在才把局部影像真正加入 Map。
+            const bool layerAdded =
+                attachImageryLayerToMap();
+
+            if (!layerAdded)
+            {
+                qWarning()
+                    << "The camera transition finished, "
+                    << "but the image could not be added to Map.";
+            }
+
+            // 定时器使命已经完成。
+            //
+            // 使用 deleteLater()，让 Qt 在当前事件处理结束后
+            // 安全销毁对象。
+            viewpointWaitTimer->deleteLater();
+        }
+    );
+
+    viewpointWaitTimer->start();
+
+    // 请求 Qt 尽快开始绘制相机飞行动画。
     update();
 
+    // 此处的 true 表示加载请求已经成功建立：
+    // 图层已打开、Viewpoint 已计算、相机飞行已经启动。
+    //
+    // 图层真正加入 Map 的动作将在飞行结束后发生。
     return true;
 }
 
@@ -378,60 +546,439 @@ bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
     // 实际读取预处理后确定的 TIFF 或 VRT。
     elevationLayer->setURL(preparedElevationPath);
 
-    osgEarth::Map* map = mapNode_->getMap();
+    // 当前 Map 已经在函数开头验证过存在。
+    osgEarth::Map* map =
+        mapNode_->getMap();
 
-    // 7. 将高程图层加入 Map。
-    //    加入之后，地形引擎才会开始读取 DEM 并构建有起伏的地表。
-    map->addLayer(elevationLayer.get());
+    // 在 DEM 独立打开之前，使用当前 Map 的读取选项。
+    //
+    // 这样插件、缓存以及资源读取环境，
+    // 与 DEM 后续正式加入 Map 时保持一致。
+    elevationLayer->setReadOptions(
+        map->getReadOptions()
+    );
 
-    // 8. addLayer 后检查状态。
-    //    某些错误只有图层加入 Map、开始初始化后才会暴露。
-    if (elevationLayer->getStatus().isError())
+    // 主动打开 DEM，但暂时不把它加入 Map。
+    //
+    // open() 会读取高程数据源、空间参考和数据范围，
+    // 因此后面能够提前计算 Viewpoint。
+    //
+    // 此时 DEM 还不会参与 Terrain Engine 的地形构建。
+    const osgEarth::Status openStatus =
+        elevationLayer->open();
+
+    if (openStatus.isError())
     {
-        qWarning() << "Failed to add elevation layer:"
-                   << sourcePath
-                   << QString::fromStdString(
-                          elevationLayer->getStatus().message());
+        std::cerr
+            << "Failed to open prepared elevation before "
+            << "adding it to Map: "
+            << openStatus.toString()
+            << std::endl;
 
-        // 加载失败时，把无效图层从 Map 中移除。
-        map->removeLayer(elevationLayer.get());
         return false;
     }
 
-    qDebug() << "Elevation layer opened successfully:"
-             << sourcePath;
+    std::cout
+        << "Elevation opened successfully before adding to Map: "
+        << preparedElevationPath
+        << std::endl;
 
-    // 9. 根据 DEM 的地理范围计算适合观察该区域的视点。
+    // DEM 已经成功打开，所以即使它尚未进入 Map，
+    // 也可以从 DataExtent 中计算目标 Viewpoint。
     const auto layerViewpoint =
         HelloEarth::Navigation::calculateInitialViewpoint(
-            *elevationLayer);
+            *elevationLayer
+        );
+
+    // 把 DEM 正式加入 Map 的操作组织成局部函数。
+    //
+    // 无法计算 Viewpoint 时可以直接调用；
+    // 正常情况下在相机飞行结束后调用。
+    const auto attachElevationLayerToMap =
+        [this, elevationLayer, layerDisplayName]() -> bool
+        {
+            if (
+                !mapNode_ ||
+                !mapNode_->getMap()
+            )
+            {
+                std::cerr
+                    << "Cannot attach elevation layer: "
+                    << "Map is no longer available."
+                    << std::endl;
+
+                return false;
+            }
+
+            osgEarth::Map* currentMap =
+                mapNode_->getMap();
+
+            // 到达这里时，DEM 才真正进入 Map。
+            //
+            // 从这一刻开始，Terrain Engine 才会把该 DEM
+            // 纳入地形高程采样和地表网格构建过程。
+            currentMap->addLayer(
+                elevationLayer.get()
+            );
+
+            if (elevationLayer->getStatus().isError())
+            {
+                std::cerr
+                    << "Failed to attach opened elevation "
+                    << "layer to Map: "
+                    << elevationLayer
+                        ->getStatus()
+                        .toString()
+                    << std::endl;
+
+                currentMap->removeLayer(
+                    elevationLayer.get()
+                );
+
+                return false;
+            }
+
+            std::cout
+                << "Elevation added to Map: "
+                << elevationLayer->getName()
+                << std::endl;
+
+            // 只有 DEM 真正加入 Map 后，
+            // 才通知 MainWindow 创建 Elevation Layers 下的树节点。
+            emit this->elevationLayerAdded(
+                currentMap->getUID(),
+                elevationLayer->getUID(),
+                layerDisplayName
+            );
+
+            // DEM 加入后地形发生变化，请求重新绘制。
+            update();
+
+            return true;
+        };
+
+    // 如果无法计算 DEM 的 Viewpoint，
+    // 就无法执行“先飞行、后加入”的正常流程。
+    //
+    // 为了保留容错能力，此时直接把 DEM 加入 Map。
+    if (!layerViewpoint)
+    {
+        std::cerr
+            << "Elevation opened, but its viewpoint "
+            << "could not be calculated: "
+            << preparedElevationPath
+            << std::endl;
+
+        return attachElevationLayerToMap();
+    }
+
+    std::cout
+        << "Calculated elevation viewpoint before adding to Map: "
+        << layerViewpoint->toString()
+        << std::endl;
 
     if (!layerViewpoint)
     {
-        // 视点计算失败不代表高程图层加载失败，
-        // 所以这里只报告警告，不移除图层。
-        qWarning() << "Unable to calculate elevation viewpoint:"
-                   << sourcePath;
-    }
-    else if (manipulator_)
-    {
-        // 用 1.5 秒平滑飞行到 DEM 所在区域。
-        manipulator_->setViewpoint(
-            *layerViewpoint,
-            0.5
-        );
+        std::cerr
+            << "Elevation opened, but its viewpoint "
+            << "could not be calculated: "
+            << preparedElevationPath
+            << std::endl;
+
+        return attachElevationLayerToMap();
     }
 
-    // 10. 通知 MainWindow：
-    //     一个新的高程图层已经成功加入 osgEarth Map。
-    //     下一阶段 Layers Dock 会订阅该信号并创建对应树节点。
-    emit elevationLayerAdded(
-        map->getUID(),
-        elevationLayer->getUID(),
-        layerDisplayName
+    std::cout
+        << "Calculated elevation viewpoint before adding to Map: "
+        << layerViewpoint->toString()
+        << std::endl;
+
+    // 根据 DEM 的推荐观察距离，
+    // 设置它参与地形计算的最大相机距离。
+    //
+    // 当相机远离 DEM 所在区域、进入大范围视角后，
+    // osgEarth 会停止使用这个局部 DEM；
+    // 当相机重新回到局部范围后，DEM 会自动恢复参与地形计算。
+    if (layerViewpoint->range().isSet())
+    {
+        const double viewpointRangeMeters =
+            layerViewpoint
+                ->range()
+                ->as(
+                    osgEarth::Units::METERS
+                );
+
+        // 学习阶段先使用推荐观察距离的 4 倍。
+        //
+        // 例如推荐观察距离为 30 km，
+        // 那么相机距离超过约 120 km 时，
+        // 这个局部 DEM 将停止参与当前地形构建。
+        const double maximumVisibleRangeMeters =
+            viewpointRangeMeters * 4.0;
+
+        if (
+            std::isfinite(maximumVisibleRangeMeters) &&
+            maximumVisibleRangeMeters > 0.0
+        )
+        {
+            elevationLayer->setMaxVisibleRange(
+                static_cast<float>(
+                    maximumVisibleRangeMeters
+                )
+            );
+
+            std::cout
+                << "Elevation maximum visible range: "
+                << maximumVisibleRangeMeters
+                << " meters"
+                << std::endl;
+        }
+    }
+
+    // 如果 EarthManipulator 尚未创建，
+    // 当前没有可以执行视点飞行的相机控制器，
+    // 因此直接加入 DEM。
+    if (!manipulator_)
+    {
+        return attachElevationLayerToMap();
+    }
+
+    // DEM 已经打开且 Viewpoint 已经计算完成，
+    // 但此时仍未加入 Map，因此不会参与飞行过程中的地形重建。
+    manipulator_->setViewpoint(
+        *layerViewpoint,
+
+        // 相机飞行动画时间，单位为秒。
+        0.5
     );
 
-    // 11. 请求 Qt 安排下一次 OpenGL 绘制。
+    // 创建临时定时器，持续检查视点飞行动画是否结束。
+    //
+    // 它不直接执行渲染；
+    // 原来的 renderTimer_ 和 paintGL() 仍负责逐帧渲染。
+    auto* viewpointWaitTimer =
+        new QTimer(this);
+
+    viewpointWaitTimer->setInterval(
+        16
+    );
+
+    viewpointWaitTimer->setTimerType(
+        Qt::PreciseTimer
+    );
+
+    connect(
+        viewpointWaitTimer,
+        &QTimer::timeout,
+        this,
+        [
+            this,
+            viewpointWaitTimer,
+            attachElevationLayerToMap
+        ]()
+        {
+            // EarthManipulator 仍在执行视点过渡时继续等待。
+            if (
+                manipulator_ &&
+                manipulator_->isSettingViewpoint()
+            )
+            {
+                return;
+            }
+
+            // 相机已经到达目标区域，停止继续检查。
+            viewpointWaitTimer->stop();
+
+            // 现在才把 DEM 真正加入 Map，
+            // 让 Terrain Engine 在目标区域开始构建地形。
+            const bool layerAdded =
+                attachElevationLayerToMap();
+
+            if (!layerAdded)
+            {
+                qWarning()
+                    << "The camera transition finished, "
+                    << "but the elevation layer could not "
+                    << "be added to Map.";
+            }
+
+            // 当前临时定时器已经完成使命。
+            viewpointWaitTimer->deleteLater();
+        }
+    );
+
+    viewpointWaitTimer->start();
+
+    // 请求 Qt 尽快开始绘制相机飞行动画。
+    update();
+
+    // 这里的 true 表示：
+    // 1. DEM 已经成功打开；
+    // 2. Viewpoint 已成功计算；
+    // 3. 相机飞行已经开始；
+    // 4. 飞行结束后将自动把 DEM 加入 Map。
+    return true;
+}
+
+bool EarthViewWidget::moveToLayer(
+    int mapUid,
+    int layerUid,
+    double durationSeconds
+)
+{
+    // 相机移动必须依赖已经创建完成的 EarthManipulator。
+    //
+    // 如果三维窗口尚未完成初始化，
+    // 当前还没有可以接收 Viewpoint 的相机控制器。
+    if (!manipulator_)
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "EarthManipulator is not initialized.";
+
+        return false;
+    }
+
+    // MapNode 和真实 Map 必须处于有效状态。
+    if (
+        !mapNode_ ||
+        !mapNode_->getMap()
+    )
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "Map is not available.";
+
+        return false;
+    }
+
+    // 飞行动画时间必须是有限的非负数。
+    //
+    // durationSeconds == 0.0：
+    // 立即跳转到目标视点。
+    //
+    // durationSeconds > 0.0：
+    // 使用指定秒数播放视点过渡动画。
+    if (
+        !std::isfinite(durationSeconds) ||
+        durationSeconds < 0.0
+    )
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "invalid transition duration:"
+            << durationSeconds;
+
+        return false;
+    }
+
+    // 当前程序使用负数表示无效 UID。
+    if (
+        mapUid < 0 ||
+        layerUid < 0
+    )
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "invalid Map or Layer UID.";
+
+        return false;
+    }
+
+    osgEarth::Map* map =
+        mapNode_->getMap();
+
+    // 防止根据另一个 Map 的 UID，
+    // 错误操作当前 EarthViewWidget 管理的 Map。
+    if (
+        static_cast<int>(
+            map->getUID()
+        ) != mapUid
+    )
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "Map UID does not match.";
+
+        return false;
+    }
+
+    // 根据 Tree 节点保存的 Layer UID，
+    // 查找 Map 中对应的真实 osgEarth Layer。
+    osgEarth::Layer* layer =
+        map->getLayerByUID(
+            layerUid
+        );
+
+    if (layer == nullptr)
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "Layer was not found. UID:"
+            << layerUid;
+
+        return false;
+    }
+
+    // 当前 ViewpointCalculator 接收 TileLayer。
+    //
+    // ImageLayer 和 ElevationLayer 都继承自 TileLayer，
+    // 因此影像和 DEM 都能使用同一套视点计算逻辑。
+    //
+    // 如果未来传入 ModelLayer、AnnotationLayer 等其他类型，
+    // dynamic_cast 将返回 nullptr，当前函数会安全地报告不支持。
+    auto* tileLayer =
+        dynamic_cast<osgEarth::TileLayer*>(
+            layer
+        );
+
+    if (tileLayer == nullptr)
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "the selected layer is not a TileLayer.";
+
+        return false;
+    }
+
+    // 根据该图层自己的 DataExtent，
+    // 重新计算适合完整观察它的 Viewpoint。
+    const auto layerViewpoint =
+        HelloEarth::Navigation::calculateInitialViewpoint(
+            *tileLayer
+        );
+
+    if (!layerViewpoint)
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "unable to calculate a valid Viewpoint.";
+
+        return false;
+    }
+
+    qDebug()
+        << "Moving camera to layer:"
+        << QString::fromStdString(
+               layer->getName()
+           )
+        << QString::fromStdString(
+               layerViewpoint->toString()
+           );
+
+    // 将目标 Viewpoint 交给 EarthManipulator。
+    //
+    // 这里只控制相机，不修改图层顺序，
+    // 也不会重新创建或重新加入图层。
+    manipulator_->setViewpoint(
+        *layerViewpoint,
+        durationSeconds
+    );
+
+    // 请求 Qt 尽快开始绘制视点过渡动画。
+    //
+    // 真正的逐帧渲染仍然由 renderTimer_、
+    // paintGL() 和 viewer_->frame() 共同完成。
     update();
 
     return true;
@@ -547,6 +1094,350 @@ bool EarthViewWidget::removeLayer(
     map->removeLayer(layer);
 
     // 图层结构发生变化后，请求 Qt 重新绘制三维窗口。
+    update();
+
+    return true;
+}
+
+bool EarthViewWidget::synchronizeLayerOrder(
+    int mapUid,
+    const std::vector<int>& layerUidsTopToBottom
+)
+{
+    // MapNode 可能尚未初始化完成，也可能正在释放。
+    // 当前状态下无法访问真实 osgEarth Map。
+    if (!mapNode_ || !mapNode_->getMap())
+    {
+        return false;
+    }
+
+    osgEarth::Map* map =
+        mapNode_->getMap();
+
+    // 当前 EarthViewWidget 暂时只管理一个 Map。
+    //
+    // 如果调用者传入的 Map UID 与当前 Map 不一致，
+    // 就不能继续调整图层，以免操作错误的地图。
+    if (map->getUID() != mapUid)
+    {
+        return false;
+    }
+
+    // 分类中不存在图层，或者只有一个图层时，
+    // 不可能产生相对顺序变化。
+    //
+    // 这种情况虽然不需要调用 moveLayer()，
+    // 但从同步结果来看已经满足目标顺序，因此返回 true。
+    if (layerUidsTopToBottom.size() < 2)
+    {
+        return true;
+    }
+
+    // 保存已经检查过的 UID，用于检测重复图层。
+    //
+    // 如果同一个 Layer UID 在列表中出现两次，
+    // 后面的顺序计算将无法形成有效的一一对应关系。
+    std::unordered_set<int> checkedLayerUids;
+
+    // 按照 Qt 界面从上到下的顺序，
+    // 保存经过验证的真实 osgEarth Layer。
+    //
+    // 使用 osg::ref_ptr 暂时持有图层，
+    // 可以确保整个排序过程中这些对象保持有效。
+    std::vector<
+        osg::ref_ptr<osgEarth::Layer>
+    > layersTopToBottom;
+
+    layersTopToBottom.reserve(
+        layerUidsTopToBottom.size()
+    );
+
+    // 逐个验证 MainWindow 提供的 Layer UID。
+    for (const int layerUid : layerUidsTopToBottom)
+    {
+        // 当前程序使用 -1 表示无效 UID。
+        if (layerUid < 0)
+        {
+            return false;
+        }
+
+        // insert() 返回一个 pair。
+        //
+        // second 为 true：
+        // 该 UID 第一次出现，已经成功写入集合。
+        //
+        // second 为 false：
+        // 该 UID 之前已经出现，说明列表中存在重复项。
+        const bool inserted =
+            checkedLayerUids
+                .insert(layerUid)
+                .second;
+
+        if (!inserted)
+        {
+            return false;
+        }
+
+        // 根据 UID 查找 Map 中真实存在的 Layer。
+        osgEarth::Layer* layer =
+            map->getLayerByUID(layerUid);
+
+        if (layer == nullptr)
+        {
+            // Qt 图层树中记录了该 UID，
+            // 但真实 osgEarth Map 已经找不到对应图层。
+            //
+            // 此时界面与 Map 状态可能已经不一致，
+            // 不能继续执行排序。
+            return false;
+        }
+
+        // 按照界面从上到下的顺序保存真实图层引用。
+        layersTopToBottom.emplace_back(
+            layer
+        );
+    }
+
+    // 读取 osgEarth Map 当前保存的完整 Layer 顺序。
+    //
+    // 这里取得的不只是当前分类中的影像或 DEM，
+    // 而是 Map 中所有类型的 Layer，例如：
+    //
+    // Image、Elevation、Model、Annotation 等。
+    osgEarth::LayerVector currentMapLayers;
+
+    map->getLayers(
+        currentMapLayers
+    );
+
+    // 理论上前面已经通过 getLayerByUID() 验证了所有目标图层。
+    //
+    // 如果完整 Map 列表为空，说明 Map 状态在验证过程中
+    // 发生了异常变化，因此不能继续执行排序。
+    if (currentMapLayers.empty())
+    {
+        return false;
+    }
+
+    // 记录待排序图层当前占据的 Map 全局索引。
+    //
+    // 例如当前完整 Map 顺序是：
+    //
+    // 0：Image A
+    // 1：DEM X
+    // 2：Image B
+    // 3：Model Y
+    // 4：Image C
+    //
+    // 如果本次调整的是影像，那么得到的槽位就是：
+    // [0, 2, 4]
+    std::vector<unsigned> occupiedMapIndices;
+
+    occupiedMapIndices.reserve(
+        layersTopToBottom.size()
+    );
+
+    // 遍历 osgEarth Map 的完整 Layer 列表。
+    for (
+        unsigned mapIndex = 0;
+        mapIndex < currentMapLayers.size();
+        ++mapIndex
+    )
+    {
+        osgEarth::Layer* mapLayer =
+            currentMapLayers[mapIndex].get();
+
+        if (mapLayer == nullptr)
+        {
+            // 正常情况下 Map 的 Layer 列表中不应存在空对象。
+            // 如果出现空对象，说明当前 Map 状态不可靠。
+            return false;
+        }
+
+        const int currentLayerUid =
+            static_cast<int>(
+                mapLayer->getUID()
+            );
+
+        // checkedLayerUids 中保存的是本次需要调整顺序的全部 UID。
+        //
+        // 如果当前 Map Layer 的 UID 存在于集合中，
+        // 就记录它当前占据的全局 Map 索引。
+        if (
+            checkedLayerUids.find(currentLayerUid) !=
+            checkedLayerUids.end()
+        )
+        {
+            occupiedMapIndices.push_back(
+                mapIndex
+            );
+        }
+    }
+
+    // 找到的全局槽位数量必须与传入的目标图层数量一致。
+    //
+    // 如果数量不同，说明验证图层之后 Map 又发生了变化，
+    // 或者 Qt 图层树与真实 Map 已经出现状态不一致。
+    if (
+        occupiedMapIndices.size() !=
+        layersTopToBottom.size()
+    )
+    {
+        return false;
+    }
+
+    // Qt 图层树采用“顶部优先”的显示顺序，
+    // osgEarth Map 中则按照“底层到上层”的方向排列。
+    //
+    // 因此需要把 Qt 的从上到下顺序反转，
+    // 得到 osgEarth 最终需要的从底到顶顺序。
+    std::vector<
+        osg::ref_ptr<osgEarth::Layer>
+    > layersBottomToTop(
+        layersTopToBottom.rbegin(),
+        layersTopToBottom.rend()
+    );
+
+    // 复制当前完整 Map 顺序，作为目标顺序模板。
+    //
+    // 接下来只替换本次目标图层占据的槽位，
+    // 其他类型图层仍然保留在原来的位置。
+    osgEarth::LayerVector desiredMapLayers =
+        currentMapLayers;
+
+    // 按照目标底到顶顺序，重新填充同类图层原来占据的槽位。
+    for (
+        std::size_t layerIndex = 0;
+        layerIndex < occupiedMapIndices.size();
+        ++layerIndex
+    )
+    {
+        const unsigned mapIndex =
+            occupiedMapIndices[layerIndex];
+
+        desiredMapLayers[mapIndex] =
+            layersBottomToTop[layerIndex];
+    }
+
+    // 从 Map 的第一个全局位置开始，逐个检查真实顺序
+    // 是否已经和 desiredMapLayers 中的目标顺序一致。
+    for (
+        std::size_t desiredIndex = 0;
+        desiredIndex < desiredMapLayers.size();
+        ++desiredIndex
+    )
+    {
+        // osgEarth 的图层索引接口使用 unsigned，
+        // 而 std::vector::size() 和索引通常使用 std::size_t。
+        //
+        // 当前图层数量远小于 unsigned 的表示范围，
+        // 因此这里显式转换为 osgEarth 接口需要的类型。
+        const unsigned mapIndex =
+            static_cast<unsigned>(
+                desiredIndex
+            );
+
+        // 取得目标顺序中，该位置应当出现的 Layer。
+        osgEarth::Layer* desiredLayer =
+            desiredMapLayers[desiredIndex].get();
+
+        if (desiredLayer == nullptr)
+        {
+            // 前面正常计算得到的目标列表中不应该出现空 Layer。
+            return false;
+        }
+
+        // 读取真实 osgEarth Map 在该位置上
+        // 当前实际保存的 Layer。
+        //
+        // 注意：这里直接从 map 重新读取，
+        // 而不是读取之前的 currentMapLayers 快照。
+        //
+        // 因为每次调用 moveLayer() 后，真实 Map 顺序会变化，
+        // 但 currentMapLayers 这个本地快照不会自动更新。
+        osgEarth::Layer* currentLayer =
+            map->getLayerAt(
+                mapIndex
+            );
+
+        if (currentLayer == nullptr)
+        {
+            return false;
+        }
+
+        // 如果当前位置已经是目标 Layer，
+        // 就不需要执行任何移动。
+        if (currentLayer == desiredLayer)
+        {
+            continue;
+        }
+
+        // 找到目标 Layer 当前在真实 Map 中的位置。
+        //
+        // getIndexOfLayer() 找不到 Layer 时，
+        // 会返回 map->getNumLayers()。
+        const unsigned currentIndex =
+            map->getIndexOfLayer(
+                desiredLayer
+            );
+
+        if (currentIndex >= map->getNumLayers())
+        {
+            // 目标 Layer 已经不在当前 Map 中，
+            // 说明排序过程中 Map 状态发生了异常变化。
+            return false;
+        }
+
+        // 将目标 Layer 移动到当前正在处理的目标位置。
+        //
+        // moveLayer() 操作的是已经存在于 Map 中的真实 Layer，
+        // 不会重新创建图层，也不会重新分配 Layer UID。
+        map->moveLayer(
+            desiredLayer,
+            mapIndex
+        );
+    }
+
+    // 所有移动操作结束后，重新读取一次真实 Map 顺序，
+    // 用于确认最终结果确实与 desiredMapLayers 完全一致。
+    osgEarth::LayerVector verifiedMapLayers;
+
+    map->getLayers(
+        verifiedMapLayers
+    );
+
+    // 图层数量也必须完全一致。
+    if (
+        verifiedMapLayers.size() !=
+        desiredMapLayers.size()
+    )
+    {
+        return false;
+    }
+
+    // 逐个位置验证真实 Map 和目标顺序是否一致。
+    for (
+        std::size_t mapIndex = 0;
+        mapIndex < desiredMapLayers.size();
+        ++mapIndex
+    )
+    {
+        osgEarth::Layer* verifiedLayer =
+            verifiedMapLayers[mapIndex].get();
+
+        osgEarth::Layer* desiredLayer =
+            desiredMapLayers[mapIndex].get();
+
+        if (verifiedLayer != desiredLayer)
+        {
+            // 只要有一个位置不一致，
+            // 就不能向 MainWindow 报告同步成功。
+            return false;
+        }
+    }
+
+    // osgEarth Map 的真实图层顺序已经调整完成，
+    // 请求 Qt 安排下一次三维画面刷新。
     update();
 
     return true;

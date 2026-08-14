@@ -15,6 +15,8 @@
 #include <QMessageBox>
 #include <QAbstractItemView>
 
+#include <vector>
+
 namespace
 {
     // QTreeWidgetItem 除了显示文字，还可以保存程序内部数据。
@@ -229,6 +231,14 @@ MainWindow::MainWindow(QWidget* parent)
         QAbstractItemView::SingleSelection
     );
 
+    // 连接图层移动完成信号。
+    connect(
+        layerTree_,
+        &LayerTreeWidget::layerItemMoved,
+        this,
+        &MainWindow::handleLayerItemMoved
+    );
+
     // 使用自定义右键菜单。
     //
     // 默认情况下，QTreeWidget 不会自动提供符合我们业务需求的菜单。
@@ -287,6 +297,11 @@ MainWindow::MainWindow(QWidget* parent)
             // 对应指针将继续保持 nullptr。
             QAction* addImageryAction = nullptr;
             QAction* addElevationAction = nullptr;
+
+            // 只有右键点击真实图层叶子时，
+            // 才会创建“移动到图层范围”操作。
+            QAction* zoomToLayerAction = nullptr;
+
             QAction* removeAction = nullptr;
 
             // 根据被点击节点的业务类型，
@@ -312,6 +327,17 @@ MainWindow::MainWindow(QWidget* parent)
                 itemType == LayerTreeItemType::ElevationLayer
             )
             {
+                // 影像和 DEM 都继承自 osgEarth::TileLayer，
+                // 因此都可以根据自身 DataExtent 计算 Viewpoint。
+                zoomToLayerAction =
+                    contextMenu.addAction(
+                        QStringLiteral("Zoom to Layer")
+                    );
+
+                // 将导航操作和具有破坏性的删除操作分隔开，
+                // 减少用户误点 Remove Layer 的可能。
+                contextMenu.addSeparator();
+
                 // 用户右键点击真实影像或高程图层。
                 removeAction =
                     contextMenu.addAction(
@@ -357,6 +383,94 @@ MainWindow::MainWindow(QWidget* parent)
             {
                 // 复用 File -> Open DEM... 的完整加载流程。
                 openElevationAction->trigger();
+            }
+            else if (selectedAction == zoomToLayerAction)
+            {
+                // 从当前 Tree 叶子节点中读取它所属的 Map UID，
+                // 以及它对应的真实 osgEarth Layer UID。
+                const QVariant mapUidData =
+                    item->data(
+                        0,
+                        MapUidRole
+                    );
+
+                const QVariant layerUidData =
+                    item->data(
+                        0,
+                        LayerUidRole
+                    );
+
+                // 真实图层节点必须同时具有 Map UID 和 Layer UID。
+                if (
+                    !mapUidData.isValid() ||
+                    !layerUidData.isValid()
+                )
+                {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Cannot zoom to layer: "
+                            "the tree item does not contain valid UIDs."
+                        ),
+                        5000
+                    );
+
+                    return;
+                }
+
+                const int mapUid =
+                    mapUidData.toInt();
+
+                const int layerUid =
+                    layerUidData.toInt();
+
+                if (
+                    mapUid < 0 ||
+                    layerUid < 0
+                )
+                {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Cannot zoom to layer: "
+                            "invalid Map or Layer UID."
+                        ),
+                        5000
+                    );
+
+                    return;
+                }
+
+                // 将相机控制交给 EarthViewWidget。
+                //
+                // MainWindow 只负责读取用户选择的 Tree 节点，
+                // 不直接访问 osgEarth Map、TileLayer 或 EarthManipulator。
+                const bool movementStarted =
+                    earthViewWidget_ != nullptr &&
+                    earthViewWidget_->moveToLayer(
+                        mapUid,
+                        layerUid
+                    );
+
+                if (!movementStarted)
+                {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Unable to calculate or start "
+                            "the selected layer viewpoint."
+                        ),
+                        5000
+                    );
+
+                    return;
+                }
+
+                // item->text(0) 是 Layers Dock 中显示的图层名称。
+                statusBar()->showMessage(
+                    QStringLiteral("Moving to layer: %1")
+                        .arg(
+                            item->text(0)
+                        ),
+                    3000
+                );
             }
             else if (selectedAction == removeAction)
             {
@@ -949,4 +1063,495 @@ void MainWindow::removeLayerTreeItem(
             .arg(layerDisplayName),
         3000
     );
+}
+
+void MainWindow::handleLayerItemMoved(
+    QTreeWidgetItem* item,
+    int oldIndex,
+    int newIndex
+)
+{
+    // 防止收到空节点。
+    if (item == nullptr)
+    {
+        return;
+    }
+
+    // oldIndex 和 newIndex 都必须是有效的非负索引。
+    if (oldIndex < 0 || newIndex < 0)
+    {
+        return;
+    }
+
+    // 如果新旧索引相同，说明节点实际没有发生位置变化。
+    //
+    // LayerTreeWidget 正常情况下已经过滤过这种情况，
+    // 这里再次检查是为了让函数自身保持可靠。
+    if (oldIndex == newIndex)
+    {
+        return;
+    }
+
+    // 取得节点移动完成后所属的父分类节点。
+    //
+    // 当前合法结构应当是：
+    //
+    // ImageryLayer   -> ImageryGroup
+    // ElevationLayer -> ElevationGroup
+    QTreeWidgetItem* groupItem =
+        item->parent();
+
+    if (groupItem == nullptr)
+    {
+        return;
+    }
+
+    // 取得移动完成后分类中的实际子节点数量。
+    const int childCount =
+        groupItem->childCount();
+
+    // oldIndex 和 newIndex 都应当位于同一个分类
+    // 当前有效的子节点索引范围内。
+    //
+    // 节点移动不会改变分类中的图层总数，
+    // 所以旧索引和新索引都应小于 childCount。
+    if (
+        oldIndex >= childCount ||
+        newIndex >= childCount
+    )
+    {
+        return;
+    }
+
+    // 再次确认节点当前实际所在的位置，
+    // 与 LayerTreeWidget 报告的 newIndex 一致。
+    //
+    // 如果不一致，说明树结构可能在信号传递期间
+    // 又发生了其他变化，此时不能继续同步 osgEarth。
+    const int actualNewIndex =
+        groupItem->indexOfChild(
+            item
+        );
+
+    if (actualNewIndex != newIndex)
+    {
+        return;
+    }
+
+    // 读取被移动节点和父分类节点的业务类型。
+    const QVariant itemTypeData =
+        item->data(
+            0,
+            ItemTypeRole
+        );
+
+    const QVariant groupTypeData =
+        groupItem->data(
+            0,
+            ItemTypeRole
+        );
+
+    if (
+        !itemTypeData.isValid() ||
+        !groupTypeData.isValid()
+    )
+    {
+        return;
+    }
+
+    const auto itemType =
+        static_cast<LayerTreeItemType>(
+            itemTypeData.toInt()
+        );
+
+    const auto groupType =
+        static_cast<LayerTreeItemType>(
+            groupTypeData.toInt()
+        );
+
+    // 验证真实图层与分类节点是否正确匹配。
+    //
+    // 不能出现：
+    // ImageryLayer   -> ElevationGroup
+    // ElevationLayer -> ImageryGroup
+    const bool isValidImageryRelationship =
+        itemType ==
+            LayerTreeItemType::ImageryLayer &&
+        groupType ==
+            LayerTreeItemType::ImageryGroup;
+
+    const bool isValidElevationRelationship =
+        itemType ==
+            LayerTreeItemType::ElevationLayer &&
+        groupType ==
+            LayerTreeItemType::ElevationGroup;
+
+    if (
+        !isValidImageryRelationship &&
+        !isValidElevationRelationship
+    )
+    {
+        return;
+    }
+
+    // 从分类节点和图层节点中分别读取 Map UID。
+    //
+    // 两者应该完全一致，表示该叶子确实属于
+    // 这个分类所管理的真实 osgEarth Map。
+    const QVariant groupMapUidData =
+        groupItem->data(
+            0,
+            MapUidRole
+        );
+
+    const QVariant itemMapUidData =
+        item->data(
+            0,
+            MapUidRole
+        );
+
+    if (
+        !groupMapUidData.isValid() ||
+        !itemMapUidData.isValid()
+    )
+    {
+        return;
+    }
+
+    const int mapUid =
+        groupMapUidData.toInt();
+
+    if (
+        mapUid < 0 ||
+        itemMapUidData.toInt() != mapUid
+    )
+    {
+        return;
+    }
+
+    // 被移动的叶子节点还必须保存有效的真实 Layer UID。
+    const QVariant movedLayerUidData =
+        item->data(
+            0,
+            LayerUidRole
+        );
+
+    if (
+        !movedLayerUidData.isValid() ||
+        movedLayerUidData.toInt() < 0
+    )
+    {
+        return;
+    }
+
+    // 到这里已经确认：
+    //
+    // 1. 移动节点存在；
+    // 2. oldIndex 和 newIndex 合法且确实发生变化；
+    // 3. 节点仍然位于正确的分类中；
+    // 4. 图层类型与分类类型匹配；
+    // 5. 分类与叶子属于同一个 Map；
+    // 6. 被移动节点保存了有效 Layer UID。
+    //
+    // 下一步将遍历 groupItem 的所有子节点，
+    // 按照 Qt 从上到下的顺序收集完整 Layer UID 列表。
+    // 保存当前分类中，按照 Qt 界面从上到下排列的
+    // 全部真实 Layer UID。
+    std::vector<int> layerUidsTopToBottom;
+
+    layerUidsTopToBottom.reserve(
+        static_cast<std::size_t>(
+            childCount
+        )
+    );
+
+    // 根据当前父分类的类型，确定其中每个叶子
+    // 应当具有的真实图层节点类型。
+    const LayerTreeItemType expectedLayerType =
+        groupType ==
+            LayerTreeItemType::ImageryGroup
+        ?
+            LayerTreeItemType::ImageryLayer
+        :
+            LayerTreeItemType::ElevationLayer;
+
+    // 记录遍历过程中是否确实找到了本次被移动的节点。
+    //
+    // 正常情况下它一定属于 groupItem，
+    // 这里再次记录是为了验证整个分类结构。
+    bool movedItemFound = false;
+
+    // 按照 Qt 图层树从上到下的顺序遍历分类中的所有叶子。
+    for (
+        int childIndex = 0;
+        childIndex < childCount;
+        ++childIndex
+    )
+    {
+        QTreeWidgetItem* childItem =
+            groupItem->child(
+                childIndex
+            );
+
+        if (childItem == nullptr)
+        {
+            return;
+        }
+
+        if (childItem == item)
+        {
+            movedItemFound = true;
+        }
+
+        // 分类下的每个子节点都必须保存有效的业务类型。
+        const QVariant childTypeData =
+            childItem->data(
+                0,
+                ItemTypeRole
+            );
+
+        if (!childTypeData.isValid())
+        {
+            return;
+        }
+
+        const auto childType =
+            static_cast<LayerTreeItemType>(
+                childTypeData.toInt()
+            );
+
+        // ImageryGroup 中只能出现 ImageryLayer；
+        // ElevationGroup 中只能出现 ElevationLayer。
+        if (childType != expectedLayerType)
+        {
+            return;
+        }
+
+        // 读取该叶子所属的 Map UID。
+        const QVariant childMapUidData =
+            childItem->data(
+                0,
+                MapUidRole
+            );
+
+        if (
+            !childMapUidData.isValid() ||
+            childMapUidData.toInt() != mapUid
+        )
+        {
+            // 分类中的所有真实图层都必须属于同一个 Map。
+            return;
+        }
+
+        // 读取该叶子关联的真实 osgEarth Layer UID。
+        const QVariant childLayerUidData =
+            childItem->data(
+                0,
+                LayerUidRole
+            );
+
+        if (
+            !childLayerUidData.isValid() ||
+            childLayerUidData.toInt() < 0
+        )
+        {
+            return;
+        }
+
+        // childIndex 从 0 开始向后遍历，
+        // 所以写入 vector 的顺序就是 Qt 界面从上到下的顺序。
+        layerUidsTopToBottom.emplace_back(
+            childLayerUidData.toInt()
+        );
+    }
+
+    // 被移动节点必须确实存在于刚才遍历的父分类中。
+    if (!movedItemFound)
+    {
+        return;
+    }
+
+    // 收集到的 UID 数量必须和分类子节点数量完全一致。
+    if (
+        layerUidsTopToBottom.size() !=
+        static_cast<std::size_t>(
+            childCount
+        )
+    )
+    {
+        return;
+    }
+
+    // 到这里，layerUidsTopToBottom 已经表示
+    // 当前分类移动完成后的完整目标顺序。
+    //
+    // 例如界面显示：
+    // Local B
+    // Local A
+    // Global
+    //
+    // 那么 vector 中就是：
+    // [Local B UID, Local A UID, Global UID]
+    //
+    // 请求 EarthViewWidget 根据 Qt 分类中的完整目标顺序，
+    // 调整真实 osgEarth Map 中的 Layer 顺序。
+    const bool synchronized =
+        earthViewWidget_ != nullptr &&
+        earthViewWidget_->synchronizeLayerOrder(
+            mapUid,
+            layerUidsTopToBottom
+        );
+
+    // 同步成功时，Qt 图层树和 osgEarth Map
+    // 已经同时处于用户要求的新顺序。
+    if (synchronized)
+    {
+        statusBar()->showMessage(
+            QStringLiteral("Layer order updated."),
+            3000
+        );
+
+        return;
+    }
+
+    // 同步失败后，Qt 图层树已经完成移动，
+    // 但 osgEarth Map 没有可靠地达到目标状态。
+    //
+    // 为避免界面长期显示一个并未真正生效的顺序，
+    // 需要把 Qt 节点恢复到 oldIndex。
+    const int currentIndex =
+        groupItem->indexOfChild(
+            item
+        );
+
+    if (currentIndex < 0)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Layer order synchronization failed, "
+                "and the tree item could not be restored."
+            ),
+            5000
+        );
+
+        return;
+    }
+
+    // 回滚过程中临时阻止 layerTree_ 发出其他 Qt 信号。
+    //
+    // 当前 layerItemMoved 信号只由我们的 dropEvent() 主动发出，
+    // 正常来说程序插回节点不会再次触发它。
+    // 这里仍然使用 QSignalBlocker，避免 itemChanged 等父类信号
+    // 在树节点被取出和插回时产生额外业务操作。
+    const QSignalBlocker signalBlocker(
+        layerTree_
+    );
+
+    // 从当前新位置取出被移动节点。
+    //
+    // takeChild() 只解除节点与父分类的关系，
+    // 不会删除 QTreeWidgetItem，因此节点可以继续插回旧位置。
+    QTreeWidgetItem* itemToRestore =
+        groupItem->takeChild(
+            currentIndex
+        );
+
+    if (itemToRestore == nullptr)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Layer order synchronization failed, "
+                "and the tree item could not be taken for rollback."
+            ),
+            5000
+        );
+
+        return;
+    }
+
+    // 安全确认：取出的节点必须就是本次移动的节点。
+    if (itemToRestore != item)
+    {
+        // 如果发生异常，先把误取出的节点放回原位置，
+        // 避免进一步破坏树结构。
+        groupItem->insertChild(
+            currentIndex,
+            itemToRestore
+        );
+
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Layer order synchronization failed because "
+                "the moved tree item could not be identified."
+            ),
+            5000
+        );
+
+        return;
+    }
+
+    // 将节点插回移动前的位置。
+    groupItem->insertChild(
+        oldIndex,
+        itemToRestore
+    );
+
+    // 构造拖动发生前的分类 UID 顺序，
+    // 用于尝试恢复可能已经被部分修改的 osgEarth Map。
+    //
+    // layerUidsTopToBottom 当前保存的是移动后的顺序。
+    // 将 newIndex 上的 UID 取出，再插回 oldIndex，
+    // 就能重建移动之前的完整分类顺序。
+    std::vector<int> originalLayerUidsTopToBottom =
+        layerUidsTopToBottom;
+
+    const int movedLayerUid =
+        originalLayerUidsTopToBottom[
+            static_cast<std::size_t>(
+                newIndex
+            )
+        ];
+
+    originalLayerUidsTopToBottom.erase(
+        originalLayerUidsTopToBottom.begin() +
+        newIndex
+    );
+
+    originalLayerUidsTopToBottom.insert(
+        originalLayerUidsTopToBottom.begin() +
+        oldIndex,
+        movedLayerUid
+    );
+
+    // 第一次同步可能在完成部分 moveLayer() 后才发现异常。
+    //
+    // 因此在恢复 Qt 树顺序后，再按照原始 UID 顺序
+    // 尝试恢复真实 osgEarth Map。
+    const bool mapRestored =
+        earthViewWidget_ != nullptr &&
+        earthViewWidget_->synchronizeLayerOrder(
+            mapUid,
+            originalLayerUidsTopToBottom
+        );
+
+    if (mapRestored)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Layer order update failed. "
+                "The previous order was restored."
+            ),
+            5000
+        );
+    }
+    else
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Layer order update failed, and the osgEarth "
+                "layer order could not be fully restored."
+            ),
+            7000
+        );
+    }
 }

@@ -4,12 +4,15 @@
 #include <QOpenGLWidget>
 #include <QString>
 
+#include <vector>
+
 #include <osg/ref_ptr>
 #include <osgViewer/GraphicsWindow>
 #include <osgViewer/Viewer>
 
 #include <osgEarth/EarthManipulator>
 #include <osgEarth/MapNode>
+#include <osgEarth/TileLayer>
 
 class QTimer;
 
@@ -72,6 +75,66 @@ public:
     bool removeLayer(
         int mapUid,
         int layerUid
+    );
+
+    // 将相机移动到指定 osgEarth 图层的数据范围。
+    //
+    // mapUid：
+    // 目标图层所属 Map 的 UID。
+    //
+    // layerUid：
+    // 需要定位的真实 osgEarth Layer UID。
+    //
+    // durationSeconds：
+    // 从当前视点移动到目标视点所使用的动画时间，单位为秒。
+    // 0.0 表示立即跳转，不播放飞行动画。
+    //
+    // 当前实现主要支持继承自 osgEarth::TileLayer 的图层，
+    // 包括 ImageLayer 和 ElevationLayer。
+    //
+    // 返回 true 表示：
+    // 1. Map 和 Layer 均成功找到；
+    // 2. 图层能够转换为 TileLayer；
+    // 3. 成功计算出 Viewpoint；
+    // 4. 已经向 EarthManipulator 提交视点移动请求。
+    //
+    // 返回 false 表示目标不存在、类型不支持、
+    // Viewpoint 计算失败，或者 EarthManipulator 尚未初始化。
+    bool moveToLayer(
+        int mapUid,
+        int layerUid,
+        double durationSeconds = 0.5
+    );
+
+    // 根据 Layers Dock 提供的同类图层完整顺序，
+    // 同步调整当前 osgEarth Map 中真实 Layer 的相对位置。
+    //
+    // mapUid：
+    // 用于确认本次排序针对的是当前 EarthViewWidget 管理的 Map。
+    //
+    // layerUidsTopToBottom：
+    // 同一个图层分类中，从界面顶部到底部排列的全部 Layer UID。
+    //
+    // 例如 Layers Dock 中显示：
+    // local_high.tif
+    // local_low.tif
+    // global.tif
+    //
+    // 那么传入顺序就是：
+    // [local_high UID, local_low UID, global UID]。
+    //
+    // 函数内部会把 Qt 的“顶部优先”顺序转换成
+    // osgEarth Map 所使用的“底层到上层”顺序。
+    //
+    // 该函数只会调整传入 UID 对应图层之间的相对顺序，
+    // 不主动改变影像、DEM、模型等其他类型图层之间的关系。
+    //
+    // 返回 true 表示图层顺序同步成功；
+    // 返回 false 表示 Map 不存在、Map UID 不匹配、
+    // UID 重复、目标图层不存在，或传入的图层集合不合法。
+    bool synchronizeLayerOrder(
+        int mapUid,
+        const std::vector<int>& layerUidsTopToBottom
     );
 
     // 将一份本地栅格数据作为影像图层加入当前 osgEarth Map。

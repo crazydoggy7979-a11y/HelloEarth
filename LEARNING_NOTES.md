@@ -1,1133 +1,458 @@
 # HelloEarth 学习笔记
 
-## 项目简介
+> 更新日期：2026-08-17
 
-HelloEarth 是一个基于 osgEarth 的三维 GIS 学习工程。
+## 1. 项目定位与学习目标
 
-本项目主要用于学习：
+HelloEarth 是一个基于 osgEarth、OpenSceneGraph、GDAL 和 Qt 的三维 GIS 学习工程。
 
-- C++ 工程开发流程
-- CMake 项目管理
-- vcpkg 依赖管理
-- OpenSceneGraph（OSG）三维渲染框架
-- osgEarth 三维地球引擎
-- 遥感数据与三维 GIS 的结合应用
+学习路线不是直接堆叠完整软件功能，而是逐层建立理解：
 
-
-## 我的学习背景
-
-本人具有以下专业背景：
-
-- 测绘工程
-- 摄影测量与遥感
-- 多模态遥感影像处理
-- 无人机遥感
-- GIS 数据处理
-
-当前学习目标：
-
-从遥感算法研究方向，进一步拓展到：
-
-```
-遥感数据
+```text
+本地遥感数据
     ↓
-GIS数据组织
+GDAL 数据检查与金字塔处理
     ↓
-三维可视化引擎
+osgEarth Map / Layer 数据组织
     ↓
-工程数字化平台
+OSG Viewer 与相机交互
+    ↓
+Qt 桌面窗口和图层管理
+    ↓
+可继续扩展的三维 GIS 原型
 ```
 
-最终希望掌握面向工程应用的：
+当前已经从最初的独立 Viewer 示例，发展到包含公共静态库、独立 Example 和 Qt 桌面端的多 Target 工程。
 
-- 三维 GIS 平台开发
-- 数字孪生场景构建
-- 遥感数据三维可视化
+## 2. 当前工程架构
 
+Workspace 采用源码、构建结果和测试数据分离的结构：
 
----
-
-# 一、开发环境配置记录
-
-## 1. 当前开发环境
-
-操作系统：
-
-- Windows
-
-
-开发工具：
-
-- Visual Studio Code
-- C++ Extension
-- CMake Tools
-- Codex
-
-
-编译环境：
-
-- Visual Studio 2022 Community
-- MSVC x64
-
-
-构建工具：
-
-- CMake
-
-
-依赖管理：
-
-- vcpkg manifest 模式
-
-
-三维 GIS 引擎：
-
-- OpenSceneGraph 3.6.5
-- osgEarth 3.8
-
-
----
-
-# 二、工程目录结构
-
-当前工程结构：
-
-```
-HelloEarth
-│
-├── CMakeLists.txt          # CMake工程配置
-│
-├── vcpkg.json              # 项目依赖管理
-│
-├── main.cpp                # 主程序
-│
-├── build/                  # 编译生成目录
-│
-├── .vscode/
-│      └── launch.json      # VS Code调试配置
-│
-├── AGENTS.md               # AI助手行为规范
-│
-└── LEARNING_NOTES.md       # 学习笔记
+```text
+HelloEarthWorkspace/
+├── HelloEarth/       # Git 源码仓库
+├── build/            # CMake 构建结果
+├── install/          # 安装结果
+└── testdata/         # 本地影像和 DEM，不进入 Git
 ```
 
+源码仓库内部主要分为：
 
----
-
-# 三、osgEarth环境搭建过程
-
-## 1. 使用vcpkg安装osgEarth
-
-采用官方推荐方式：
-
-```bash
-vcpkg install osgearth:x64-windows
+```text
+HelloEarth/
+├── include/HelloEarth/   # 公共头文件
+├── src/                  # 可复用底层静态库
+├── examples/             # 独立学习 Target
+└── apps/                  # Qt 桌面应用
 ```
 
-安装工具：
+CMake 组织关系：
 
-```bash
-vcpkg install osgearth[tools]:x64-windows --recurse
+```text
+顶层 CMakeLists.txt
+├── src/CMakeLists.txt
+│   ├── HelloEarth::Raster
+│   └── HelloEarth::Navigation
+├── examples/CMakeLists.txt
+│   ├── SingleLocalTIF
+│   └── SingleLocalDEM
+└── apps/CMakeLists.txt
+    └── HelloEarthDesktop
 ```
 
+静态库不会要求手动编译两次。构建 `HelloEarthDesktop` 或 Example 时，CMake 会先检查依赖库；源文件没有变化就直接复用已有结果，有变化才重新编译。
 
-安装完成后获得：
+## 3. osgEarth 核心对象模型
 
-- osgEarth库
-- OpenSceneGraph库
-- GDAL
-- PROJ
-- CURL
-- 图像处理相关依赖
+当前对 osgEarth 程序结构的理解：
 
-
----
-
-# 四、遇到的问题及解决过程
-
-
-## 问题1：CMake无法找到osgEarth
-
-
-### 错误现象
-
-```
-Could not find a package configuration file provided by "osgEarth"
-```
-
-
-### 原因
-
-CMake没有正确连接vcpkg工具链。
-
-
-### 解决方法
-
-使用vcpkg toolchain：
-
-```
-CMAKE_TOOLCHAIN_FILE
-
-D:/work/tool/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-
-
-之后通过：
-
-- VS Code CMake Tools
-- Visual Studio MSVC x64 Kit
-
-成功完成配置。
-
-
----
-
-# 问题2：官方osgearth_viewer可以运行，但是自己的程序运行失败
-
-
-### 现象
-
-出现：
-
-```
-FAILED to create a terrain engine for this map
-```
-
-
-### 原因分析
-
-osgEarth不仅依赖动态库，还依赖运行时插件。
-
-
-主要包括：
-
-```
-osgEarth.dll
-
-osgPlugins/
-
-osgdb_earth.dll
-
-osgdb_osgearth_engine_rex.dll
-```
-
-
-编译成功 ≠ 运行环境完整。
-
-
----
-
-# 问题3：VS Code调试时无法创建地形
-
-
-### 原因
-
-VS Code启动程序时没有继承osgEarth插件路径。
-
-
-### 解决方法
-
-通过：
-
-```
-.vscode/launch.json
-```
-
-配置运行环境：
-
-
-包括：
-
-- PATH
-- OSG_LIBRARY_PATH
-
-
-使Debug运行时能够找到：
-
-- osgEarth动态库
-- OSG插件
-- Terrain Engine插件
-
-
----
-
-# 五、VS Code开发环境配置
-
-
-目前已经实现：
-
-## 编译流程
-
-```
-修改代码
-
-↓
-
-CMake生成
-
-↓
-
-Debug编译
-
-↓
-
-生成HelloEarth.exe
-```
-
-
-## 调试流程
-
-```
-F5
-
-↓
-
-启动cppvsdbg
-
-↓
-
-进入断点
-
-↓
-
-查看变量
-
-↓
-
-单步调试
-```
-
-
----
-
-# 六、调试功能验证
-
-
-## 断点测试
-
-
-测试代码：
-
-```cpp
-osgEarth::initialize();
-```
-
-
-测试结果：
-
-成功进入断点。
-
-
-说明：
-
-- VS Code调试器正常
-- Debug符号正常
-- MSVC环境正常
-
-
----
-
-## 调试过程中遇到的问题
-
-
-使用F11（逐语句）时进入：
-
-```
-new_scalar.cpp
-
-MSVC Runtime Library
-```
-
-
-原因：
-
-F11会进入函数内部，包括：
-
-- C++标准库
-- MSVC运行库
-- new/delete实现
-
-
-这是正常现象。
-
-
-日常调试建议：
-
-使用：
-
-```
-F10 逐过程
-```
-
-避免进入第三方库。
-
-
----
-
-# 七、目前对osgEarth架构的初步理解
-
-
-当前理解：
-
-```
+```text
 osgViewer::Viewer
-
-        ↓
-
-OpenSceneGraph Scene Graph
-
-        ↓
-
+    ↓ 管理逐帧渲染、Camera 和事件
+OSG Scene Graph
+    ↓
 osgEarth::MapNode
-
-        ↓
-
+    ↓ 把 Map 转换为可渲染场景
 osgEarth::Map
-
-        ↓
-
-Layer数据层
+    ↓ 保存真实、有顺序的 Layer 集合
+osgEarth::Layer
 ```
 
+主要职责：
 
----
+- `Viewer`：逐帧更新和渲染场景。
+- `Camera`：决定观察位置、方向、投影和清屏颜色。
+- `EarthManipulator`：根据地理 Viewpoint 和鼠标输入控制 Camera。
+- `MapNode`：连接 osgEarth 地图数据和 OSG 场景图。
+- `Map`：保存 Image、Elevation、Model 等真实图层。
+- `Layer`：描述具体数据源和图层行为。
 
-## 1. Viewer
+当前程序只使用一个 `MapNode` 和一个 `Map`，但界面树节点保留了 Map UID，便于未来扩展多 Map。
 
-负责：
+## 4. 本地 GeoTIFF 的加载语义
 
-- 创建窗口
-- 渲染循环
-- 相机控制
-
-
-类似：
-
-三维场景的显示管理器。
-
-
----
-
-## 2. MapNode
-
-osgEarth核心节点。
-
-负责连接：
-
-- 地图
-- 图层
-- 地形引擎
-
-
-可以理解为：
-
-三维地球场景的入口。
-
-
----
-
-## 3. Layer
-
-
-负责管理不同类型的数据。
-
-
-例如：
-
-影像：
-
-```
-ImageLayer
-```
-
-
-高程：
-
-```
-ElevationLayer
-```
-
-
-模型：
-
-```
-ModelLayer
-```
-
-
-矢量：
-
-```
-FeatureLayer
-```
-
-
----
-
-# 八、当前学习状态
-
-
-已经完成：
-
-✅ vcpkg安装osgEarth
-
-✅ CMake工程配置
-
-✅ VS Code开发环境搭建
-
-✅ C++代码提示
-
-✅ Debug断点调试
-
-✅ osgEarth基础地球显示
-
-
-目前已经从：
-
-```
-环境搭建阶段
-```
-
-进入：
-
-```
-osgEarth应用开发学习阶段
-```
-
-
----
-
-# 九、下一阶段学习计划
-
-
-## 第一阶段：理解osgEarth基础架构
-
-学习：
-
-- Viewer
-- Scene Graph
-- MapNode
-- Map
-- Layer
-
-
-目标：
-
-理解一个三维地球程序如何运行。
-
-
----
-
-## 第二阶段：遥感数据加载
-
-
-重点学习：
-
-### 影像
-
-```
-GeoTIFF
-GDALImageLayer
-ImageLayer
-```
-
-
-### 高程
-
-```
-DEM
-
-ElevationLayer
-
-TerrainEngine
-```
-
-
-目标：
-
-实现：
-
-```
-遥感影像
-+
-DEM
-
-↓
-
-三维地形展示
-```
-
-
----
-
-## 第三阶段：GIS数据融合
-
-
-学习：
-
-- Shapefile
-- GeoJSON
-- 矢量图层
-- 空间查询
-
-
----
-
-## 第四阶段：工程应用开发
-
-
-学习：
-
-- 鼠标拾取
-- 坐标转换
-- 属性查询
-- 三维模型加载
-- 数字孪生场景
-
-
----
-
-# 十、2026-07-31 总结
-
-
-今天完成了HelloEarth项目最重要的第一步：
-
-建立完整的osgEarth C++开发环境。
-
-
-解决的问题：
-
-1. vcpkg安装osgEarth
-2. CMake查找osgEarth
-3. VS Code配置CMake Tools
-4. Debug运行环境配置
-5. osgEarth插件加载
-6. C++断点调试
-
-
-最终实现：
-
-```
-VS Code
-
-+
-
-CMake
-
-+
-
-vcpkg
-
-+
-
-osgEarth
-
-+
-
-MSVC Debug
-
-↓
-
-成功运行三维地球
-```
-
-
-后续继续学习osgEarth内部架构，
-逐步实现遥感影像、DEM、三维模型以及工程GIS数据的加载与可视化。
-
-
----
-
-# 十一、2026-08-05 本地 RGB GeoTIFF 加载学习记录
-
-
-## 1. osgEarth 程序的基本运行骨架
-
-
-今天进一步理解了一个独立 osgEarth 程序的完整流程：
-
-```
-main()
-    ↓
-osgEarth::initialize()
-    ↓
-创建 ArgumentParser 和 Viewer
-    ↓
-登记 GL3RealizeOperation
-    ↓
-创建 MapNode、Map 和 Layer
-    ↓
-将 MapNode 设置为 Viewer 的场景数据
-    ↓
-安装 EarthManipulator
-    ↓
-viewer.run() 进入事件与渲染循环
-```
-
-
-各对象的主要职责：
-
-- `Viewer`：管理窗口、Camera、事件和逐帧渲染。
-- `Map`：地图的数据模型，保存有顺序的 Layer 集合。
-- `MapNode`：一个可渲染的 OSG 场景节点，负责把 Map 转换成三维地图场景。
-- `Layer`：为地图提供影像、高程、矢量等数据。
-- `EarthManipulator`：根据地理视点和鼠标输入控制 Camera。
-
-
-一个 `MapNode` 在同一时刻持有并渲染一个 `Map`；一个 `Map` 可以包含多个有顺序的 Layer。
-
-影像图层的顺序比较接近传统 GIS 的上下叠放关系；高程、矢量和三维模型还会受到数据组合方式、深度测试、海拔和渲染状态影响，不能全部简单理解为二维图层覆盖。
-
-
----
-
-## 2. 本地 RGB GeoTIFF 的加载链路
-
-
-本地 RGB GeoTIFF 使用：
+加载本地影像使用：
 
 ```cpp
 osgEarth::GDALImageLayer
 ```
 
-
-基本数据链路：
-
-```
-本地 GeoTIFF 路径
-    ↓ setURL()
-GDALImageLayer
-    ↓ Map::addLayer()
-GDAL 打开数据集并读取元数据
-    ↓
-MapNode 按当前视野请求地图瓦片
-    ↓
-GDAL 按需读取像素窗口
-    ↓
-生成纹理并渲染到地球表面
-```
-
-
-重要结论：
+DEM 使用：
 
 ```cpp
-mapNode->getMap()->addLayer(imagery);
+osgEarth::GDALElevationLayer
 ```
 
-执行后，图层已经完成数据源的打开和初始化，可以读取状态、空间参考和数据范围；但整幅影像并没有一次性全部加载到内存或显存。像素主要在后续渲染过程中，根据 Camera 和 `TileKey` 按需读取。
+调用 `open()` 或把图层加入 Map 后，表示数据源已经完成打开和元数据初始化，不表示整幅影像已经全部读进内存或显存。
 
+后续渲染阶段会根据 Camera、LOD 和 TileKey 按需读取像素窗口并生成地形瓦片。
 
-使用以下接口检查图层是否打开成功：
-
-```cpp
-imagery->getStatus().isError()
-```
-
-
-`getStatus()` 成功表示数据集成功打开，不代表所有分辨率层级的瓦片都一定能快速生成或成功显示。
-
-
----
-
-## 3. DataExtent 与数据范围
-
-
-图层打开成功后，通过：
-
-```cpp
-const osgEarth::DataExtent& imageExtent =
-    imagery->getDataExtentsUnion();
-```
-
-
-获取图层数据覆盖范围。
-
-这里使用 `const T&` 的含义是：
-
-- `&`：引用 osgEarth 内部已经存在的对象，不额外复制一份。
-- `const`：只能读取，不能通过该引用修改原对象。
-
-
-使用：
-
-```cpp
-imageExtent.isValid()
-```
-
-
-进行最低限度的结构检查。它主要确认：
-
-- 存在有效的 SRS 对象。
-- 范围宽度非负。
-- 范围高度非负。
-
-
-它不负责判断投影声明在业务上是否正确，也不负责进行完整的经纬度合法性和数据质量检查。
-
-
-`DataExtentList` 不是 Shapefile 中每个 Feature 的包围框列表，而是表示一个瓦片图层在哪些空间范围和 LOD 上能够提供数据。
-
-例如一个稀疏 TMS 图层可能同时报告：
-
-```
-DataExtent 1：北京，LOD 10～18
-DataExtent 2：上海，LOD 10～18
-```
-
-
-`getDataExtentsUnion()` 会返回能够包住所有有效范围的总外接范围。对于当前一个 `GDALImageLayer` 对应一个普通 GeoTIFF 的情况，通常只有一个 `DataExtent`，所以 Union 就是该 TIFF 自身的四至。
-
-
----
-
-## 4. 从影像范围计算观察视点
-
-
-首先取得范围中心：
-
-```cpp
-const osgEarth::GeoPoint imageCenter =
-    imageExtent.getCentroid();
-```
-
-
-`GeoPoint` 不只是 XYZ 数值，它还携带对应的 `SpatialReference`，因此不需要提前手动把投影坐标转换成经纬度。
-
-
-然后把范围宽高统一换算成米：
-
-```cpp
-const double widthMeters =
-    imageExtent.width(osgEarth::Units::METERS);
-
-const double heightMeters =
-    imageExtent.height(osgEarth::Units::METERS);
-```
-
-
-不能简单使用 `xMax - xMin` 作为 Camera 距离，因为原始 SRS 单位可能是度、米或英尺。
-
-
-当前使用的初始距离估算：
-
-```cpp
-const double maxSpanMeters =
-    std::max(widthMeters, heightMeters);
-
-const double cameraRangeMeters =
-    maxSpanMeters * 2.0;
-```
-
-
-`2.0` 是适合当前实验的经验系数，不是严格保证完整显示的通用常数。精确距离还与 Camera 的视场角、窗口宽高比、影像长宽比和 pitch 有关。
-
-
----
-
-## 5. Viewpoint 的含义
-
-
-一个 `Viewpoint` 主要包含：
-
-```
-focalPoint
-heading
-pitch
-range
-```
-
-
-含义：
-
-- `focalPoint`：Camera 看向的地理目标点。
-- `heading`：Camera 围绕目标点的水平方向。
-- `pitch`：Camera 相对目标点的俯仰方向。
-- `range`：Camera 到目标点的三维直线距离。
-
-
-当：
+因此：
 
 ```text
-pitch = -90°
+Layer 打开成功
+    ≠ 所有像素已经加载
+    ≠ 所有层级一定能高效显示
 ```
 
-
-Camera 垂直俯视目标点，此时 `range` 可以近似理解为 Camera 与目标点之间的高差。
-
-当相机倾斜观察时，`range` 是斜距，不能再简单理解为垂直高度。
-
-
-`EarthManipulator` 会根据：
-
-```
-focalPoint + heading + pitch + range
-```
-
-
-自动计算 Camera 的三维位置、方向和观察矩阵，不需要直接设置 Camera 的 XYZ。
-
-
----
-
-## 6. setHomeViewpoint 与 setViewpoint
-
-
-两个接口的语义不同：
+检查图层状态可以使用：
 
 ```cpp
-manipulator->setHomeViewpoint(viewpoint);
+layer->getStatus().isError()
 ```
 
+## 5. DataExtent 与 Viewpoint
 
-用于设置：
-
-- 程序启动时采用的 Home 位置。
-- 用户触发 Home 操作时返回的位置。
-
+打开 TileLayer 后，可以通过数据范围获得观察中心和地面跨度：
 
 ```cpp
-manipulator->setViewpoint(viewpoint, durationSeconds);
+const osgEarth::DataExtent& extent =
+    layer.getDataExtentsUnion();
 ```
 
+`const T&` 的含义：
 
-用于主动改变当前视角，适合：
+- `&`：引用已有对象，不额外复制。
+- `const`：只读，不能通过该引用修改原对象。
 
-- “缩放至图层”。
-- 点击目标后飞行定位。
-- 2D/3D 视图同步。
-- 程序运行期间切换观察目标。
+`isValid()` 主要确认范围和 SRS 对象具备最低限度的有效结构，不等于完成完整的数据质量、经纬度范围或业务正确性检查。
 
-
-当前独立 Viewer 实验中，只在 `viewer.run()` 前调用 `setViewpoint()`，初始视角会受到 Viewer 首次 Camera/Home 初始化的影响；设置 `setHomeViewpoint()` 后，Viewer 启动时能够正确采用影像视点。
-
-当前程序只保留 `setHomeViewpoint()`，也可以在启动时正确定位到影像范围。
-
-
----
-
-## 7. Overview 金字塔问题及实验结论
-
-
-测试数据：
-
-```text
-ref.tif
-尺寸：16021 × 15842
-文件大小：约 875 MB
-```
-
-
-第一次测试时没有内部 Overview，也没有外部 `.ovr`：
-
-```
-Home Viewpoint 已经定位成功
-    ↓
-可以看到带光照变化的地形表面
-    ↓
-影像纹理没有及时出现
-```
-
-
-把对应的外部金字塔放到 TIFF 同级目录：
-
-```text
-ref.tif
-ref.tif.ovr
-```
-
-
-再次运行后，影像能够正常显示。
-
-
-原因：
-
-```
-没有 Overview
-    ↓
-低分辨率显示仍需从完整分辨率数据读取并实时降采样
-    ↓
-瓦片生成代价很高
-    ↓
-影像纹理迟迟不能出现
-
-存在 Overview
-    ↓
-GDAL 选择接近当前显示分辨率的概览层
-    ↓
-快速生成 osgEarth 所需瓦片
-    ↓
-影像正常显示
-```
-
-
-重要认识：
-
-- `.ovr` 不改变 GeoTIFF 的地理位置和投影。
-- `.ovr` 主要改善多尺度读取性能。
-- 不能只通过是否存在同名 `.ovr` 文件判断金字塔，因为 GeoTIFF 也可能具有内部 Overview。
-- 正式程序应该使用 GDAL 波段的 `GetOverviewCount()` 检查 GDAL 实际可用的 Overview。
-- 小影像不一定必须构建 Overview；大型影像应根据尺寸、访问方式和显示需求决定。
-- 构建 Overview 不宜在 UI/渲染线程中同步进行，也不宜与 osgEarth 同时读写同一数据集。
-
-
-推荐的后续加载流程：
-
-```
-用户选择 TIFF
-    ↓
-GDAL 只读检查数据与 Overview
-    ↓
-判断是否需要构建
-    ├── 不需要 → 创建 GDALImageLayer
-    └── 需要   → 后台构建并关闭 GDALDataset
-                         ↓
-                  创建 GDALImageLayer
-    ↓
-Map::addLayer()
-    ↓
-设置 Home/Viewpoint
-```
-
-
----
-
-## 8. 直接使用 GDAL API 的工程配置
-
-
-由于 HelloEarth 后续会直接调用 GDAL API，因此在 `vcpkg.json` 中显式声明：
-
-```json
-"dependencies": [
-    "osgearth",
-    "gdal"
-]
-```
-
-
-在 CMake 中查找并链接：
-
-```cmake
-find_package(osgEarth CONFIG REQUIRED)
-find_package(GDAL CONFIG REQUIRED)
-```
-
-
-```cmake
-target_link_libraries(
-    HelloEarth
-    PRIVATE
-    osgEarth::osgEarth
-    GDAL::GDAL
-)
-```
-
-
-只包含 `gdal_priv.h` 而不链接 `GDAL::GDAL` 时，编译可以通过，但链接阶段会出现：
-
-```text
-LNK2019：无法解析的外部符号 GDALVersionInfo
-LNK2019：无法解析的外部符号 GDALAllRegister
-```
-
-
-原因是编译器看到了函数声明，但链接器没有得到 GDAL 函数实现所在的导入库。
-
-
-当前已经成功调用：
+公共模块 `HelloEarth::Navigation` 中的：
 
 ```cpp
-GDALAllRegister();
-GDALVersionInfo("RELEASE_NAME");
+calculateInitialViewpoint(layer, options)
 ```
 
+执行的核心流程是：
 
-并输出：
+1. 读取图层总体 DataExtent。
+2. 计算中心 `GeoPoint`。
+3. 把宽、高换算成米。
+4. 取最大跨度并乘 `rangeScale`。
+5. 设置 heading、pitch、range 和中心高程。
+6. 返回 `std::optional<osgEarth::Viewpoint>`。
+
+`std::optional` 表示计算可能失败：成功时保存 Viewpoint，失败时返回 `std::nullopt`。
+
+Viewpoint 的主要参数：
+
+- `focalPoint`：相机观察的地理目标点。
+- `heading`：绕观察目标的水平方向。
+- `pitch`：俯仰角，`-90°` 接近垂直俯视。
+- `range`：相机到目标点的三维直线距离，不是窗口显示宽度。
+
+EarthManipulator 会根据这些参数自动计算 Camera 的实际三维位置和姿态。
+
+## 6. Overview 金字塔与 RasterPreprocessor
+
+大型 GeoTIFF 如果没有可用 Overview，在低分辨率视角下仍可能需要读取高分辨率原图并实时降采样，造成读取和瓦片生成开销过大。
+
+当前学习阶段约定：只有宽或高超过 `1024` 且没有可用金字塔时，才需要新建 Overview；但只要已经存在 Overview，无论影像尺寸大小，都要检查其可信度。
+
+当前 `HelloEarth::Raster::prepareRasterForLoading()` 已形成以下处理闭环：
 
 ```text
-GDAL version: 3.12.4
+输入 TIFF
+    ↓
+检查单一 TIFF 的尺寸、波段等基本信息
+    ↓
+是否存在外部同名 .ovr？
+    ├── 有：严格检查波段数、层数和各层尺寸
+    │       ├── 可信：直接使用
+    │       └── 不可信：备份旧 OVR，重建并再次验证
+    └── 无：检查内部 Overview
+            ├── 不存在：根据尺寸决定是否建立外部 OVR
+            ├── 可信：直接加载原 TIFF
+            └── 不可信：创建隔离 VRT，为 VRT 建外部 OVR并验证
 ```
 
+关键设计结论：
 
----
+- 外部 `.ovr` 与内部 Overview 必须分开处理。
+- 对不完整或结构不一致的 Overview，不采用“局部相信、局部补全”，而是倾向于完整重建，牺牲少量性能换取稳定性。
+- 不直接破坏带有不可信内部 Overview 的原 TIFF，而是使用 VRT 隔离数据访问和外部 Overview。
+- 预处理函数返回最终加载路径，因此 osgEarth 可能加载原 TIFF，也可能加载生成的 VRT。
+- Overview 处理目前仍同步执行；真正产品化时应迁移到后台线程，并支持进度、取消和失败恢复。
 
-## 9. 源码 UTF-8 配置
+## 7. 影像与 DEM 的三维组合
 
+影像和 DEM 在 osgEarth 中承担不同职责：
 
-为了让 VS Code 与 MSVC 正确处理中文注释：
+- ImageLayer 提供地表颜色纹理。
+- ElevationLayer 提供地形高度。
+- MapNode/Terrain Engine 组合二者，生成有纹理的三维地形。
 
-1. 在 VS Code 中使用 UTF-8 保存 `main.cpp`。
-2. 在 CMake 中为 MSVC 添加 `/utf-8`：
+它们不需要简单地按照同一个二维图层列表互相覆盖。当前 Layers Dock 把影像和 DEM 分组管理，同类数据维护覆盖顺序，osgEarth 根据图层类型和渲染机制组合不同类别。
 
-```cmake
-if(MSVC)
-    target_compile_options(
-        HelloEarth
-        PRIVATE
-        /utf-8
-    )
-endif()
-```
+## 8. Qt 嵌入 osgEarth Viewer
 
-
-这可以避免：
+桌面端使用：
 
 ```text
-warning C4819
+QMainWindow
+└── EarthViewWidget : QOpenGLWidget
 ```
 
+`EarthViewWidget` 内部持有 Viewer、MapNode、EarthManipulator 和 `GraphicsWindowEmbedded`。
 
-已有的乱码注释如果内容本身已经损坏，需要重新输入；仅改变文件编码不能自动恢复已经损坏的文字。
+可以把 `GraphicsWindowEmbedded` 理解为 osgViewer 使用的嵌入式图形窗口接口。Qt 显示真实控件，OSG 不再自己创建顶层窗口；Qt 收到的鼠标事件被转换后交给 OSG 事件队列。
 
-
----
-
-## 10. 尚未处理的问题
-
-
-运行时仍出现：
+渲染循环：
 
 ```text
-Fontconfig error: Cannot load default config file
+QTimer timeout
+    ↓
+EarthViewWidget::update()
+    ↓
+Qt 安排 paintGL()
+    ↓
+viewer_->frame()
 ```
 
+`update()` 不会重新构造 EarthViewWidget，只是请求重绘；`QOpenGLWidget` 的机制会在合适时机调用 `paintGL()`。
 
-该问题当前主要影响字体配置，与本地 GeoTIFF 影像纹理加载不是同一个问题，后续学习文字、标注或 UI 时再单独处理。
+鼠标交互流程：
 
-
----
-
-## 11. 下一次学习起点
-
-
-下一次从 GDAL Overview 检查开始：
-
-```
-显式使用 GDAL C++ API
+```text
+Qt mousePress/mouseMove/mouseRelease/wheel
     ↓
-只读打开 TIFF
+GraphicsWindowEmbedded 的事件队列
     ↓
-读取 RasterBand
+Viewer 事件遍历
     ↓
-GetOverviewCount()
+EarthManipulator 更新相机状态
     ↓
-输出每一级 Overview 尺寸
-    ↓
-计算需要的金字塔层级
-    ↓
-GDALDataset::BuildOverviews()
-    ↓
-添加错误处理、进度和取消机制
+下一帧按新 Camera 渲染
 ```
 
+## 9. 稳定的图层加载顺序
 
-今天最终实现：
+曾经出现过全球和局部高分辨率影像组合后，在全球/局部视点之间快速切换导致 NVIDIA OpenGL 驱动线程异常的问题。
 
-```
-本地 RGB GeoTIFF
-    +
-外部 .ovr 金字塔
-    +
-自动计算初始 Home Viewpoint
+当前采用的稳定流程为：
+
+```text
+栅格预处理
     ↓
-在 osgEarth Viewer 中正确定位并显示
+创建并 open() osgEarth Layer，但暂不加入 Map
+    ↓
+根据 Layer 的 DataExtent 计算 Viewpoint
+    ↓
+EarthManipulator 飞向目标范围
+    ↓
+轮询 isSettingViewpoint()，等待飞行结束
+    ↓
+把 Layer 加入 Map
+    ↓
+发出 layerAdded 信号
 ```
+
+同时为局部 Image/Elevation Layer 设置与其 Viewpoint range 相关的最大可视距离，避免在远超数据适用尺度的全球视角下继续调度局部高分辨率栅格。
+
+当前还通过 `rasterLayerLoadPending_` 限制同一时间只启动一个栅格异步加载请求，防止多个飞行和延迟 addLayer 回调互相覆盖。
+
+## 10. Layers Dock 与真实 osgEarth Layer 的关联
+
+当前树结构：
+
+```text
+Global Map
+├── Imagery Layers
+│   ├── local_high.tif
+│   └── global.tif
+└── Elevation Layers
+    └── dem.tif
+```
+
+每个节点通过 `Qt::UserRole` 及其偏移保存业务数据：
+
+- `ItemTypeRole`：Map、分类、影像叶子或 DEM 叶子。
+- `MapUidRole`：对应 osgEarth Map UID。
+- `LayerUidRole`：对应真实 osgEarth Layer UID。
+
+界面显示文字可能被修改或翻译，所以业务逻辑不能依赖 `item->text()` 判断节点类型，而应读取 Role。
+
+Qt 信号/槽负责连接界面与三维数据：
+
+```text
+EarthViewWidget 创建 Map/Layer
+    ↓ emit mapCreated / imageryLayerAdded / elevationLayerAdded
+MainWindow 收到信号
+    ↓
+创建并关联树节点
+```
+
+已有操作包括：
+
+- 复选框显隐：根据 UID 找到真实 Layer，修改其 enabled 状态。
+- 删除：先删除真实 osgEarth Layer，成功后再删除树节点。
+- Zoom to Layer：读取真实 TileLayer，计算 Viewpoint 并驱动 EarthManipulator。
+
+## 11. 图层树内部拖动排序
+
+内部拖动是一组事件组成的状态机：
+
+```text
+startDrag()
+    ↓ 记录 oldIndex 和临时 DragToken
+QTreeWidget::startDrag()
+    ├── dragEnterEvent()
+    ├── dragMoveEvent() 持续验证落点
+    └── dropEvent() 让 Qt 真正移动节点
+父类 startDrag 返回
+    ↓ 根据 DragToken 找到移动后的有效节点
+    ↓ 得到 newIndex
+emit layerItemMoved(item, oldIndex, newIndex)
+    ↓
+MainWindow::handleLayerItemMoved()
+    ↓
+EarthViewWidget::synchronizeLayerOrder()
+```
+
+为什么需要 DragToken：Qt 内部移动 QTreeWidgetItem 时可能复制新节点再删除旧节点，因此拖动前保存的原指针在结束后不一定仍然有效。临时 Token 保存在节点的 `Qt::UserRole + 1000` 中，会跟随节点数据一起复制，拖动结束后可以据此找到最终节点。
+
+`QSignalBlocker` 用于防止写入和清除 Token 时触发无关的 `itemChanged` 业务逻辑。
+
+当前内部规则：
+
+- 影像只能在 Imagery Layers 内调整。
+- DEM 只能在 Elevation Layers 内调整。
+- 真实图层不能成为其他真实图层的子节点。
+- 一次只移动一个节点。
+
+MainWindow 按 Qt 从上到下收集同类 Layer UID。osgEarth Map 使用底层到上层顺序，因此同步函数会反转列表，并只替换这一类图层当前占据的全局槽位，其他类型图层保持原位置。
+
+同步失败时，Qt 节点会回滚到 `oldIndex`，并再次尝试恢复 osgEarth 原始顺序。
+
+## 12. 从资源管理器拖入 TIFF
+
+外部文件拖入和内部节点排序共用 `dragEnterEvent()`、`dragMoveEvent()` 和 `dropEvent()`，通过：
+
+```cpp
+event->source() == this
+```
+
+区分来源。内部节点来源是当前 LayerTreeWidget；资源管理器文件通常不是当前 Qt 对象。
+
+文件先以 `QMimeData` 的 URL 列表进入程序。当前要求：
+
+- 只有一个 URL。
+- 必须是本地普通文件。
+- 文件存在并可读。
+- 后缀为 `.tif` 或 `.tiff`。
+
+外部树落点规则：
+
+- 分类节点表面和真实图层表面禁止。
+- 分类节点下方的提示线表示插入分类顶部。
+- 真实图层上方/下方的提示线表示对应索引。
+- Map 节点和空白区域禁止。
+
+Qt 原生 Model 不理解外部 TIFF URL 应如何转换为业务图层，所以外部拖入使用自定义提示线：`dragMoveEvent()` 计算坐标，`paintEvent()` 在树正常绘制完成后用 `QPainter` 画线。
+
+松开鼠标时使用 `repaint()` 立即清除提示线，再发出加载信号；如果只使用 `update()`，同步执行的 GDAL 预处理可能阻塞事件循环，使提示线延迟消失。
+
+外部文件的目标位置通过 `PendingRasterTreeInsertion` 保存，因为文件放下和真实图层加入 Map 不在同一时刻。等 layerAdded 信号到达后，程序在指定索引创建树节点，并复用已有排序同步逻辑调整 osgEarth 顺序。
+
+三维视图也支持外部 TIFF 拖入，但由于三维区域本身无法表达影像/DEM 分类，会弹出窗口让用户明确选择加载类型，新图层默认进入相应分类顶部。
+
+## 13. C++ 与 Qt 语法复习
+
+### `const`
+
+表示对象或引用只读，帮助编译器阻止意外修改。
+
+### 引用 `&`
+
+引用已有对象，不创建另一份副本。作为输出参数时，也可以让函数修改调用者传入的变量。
+
+### 继承
+
+`EarthViewWidget : public QOpenGLWidget` 和 `LayerTreeWidget : public QTreeWidget` 表示在 Qt 父类已有能力上增加自己的状态、事件处理和业务接口。
+
+### `public / protected / private`
+
+- `public`：外部调用者可以使用。
+- `protected`：类自身及派生类使用，适合 Qt 事件重写。
+- `private`：只允许类自身实现访问。
+
+### 析构函数
+
+例如：
+
+```cpp
+~EarthViewWidget() override;
+```
+
+对象销毁时自动执行，用于停止定时器、释放 Viewer 关系和 OpenGL 相关资源。`override` 表示重写父类虚析构函数。
+
+## 14. 已处理和仍存在的问题
+
+已经处理：
+
+- GDAL API 链接错误：显式链接 `GDAL::GDAL`。
+- MSVC 中文源码警告：使用 UTF-8 保存，并设置 `/utf-8`。
+- Terrain Engine 创建失败：在调试环境中配置 OSG 插件路径。
+- Qt Windows 光标位图断言：采用当前稳定的 QOpenGLWidget 嵌入方案。
+- 全球/局部图层视点切换崩溃：先飞行后 addLayer，并限制局部层最大可视距离。
+- Qt 图层树与 osgEarth 顺序不一致：建立 UID 关联、完整顺序同步和失败回滚。
+- 外部拖放提示不清晰：增加自定义合法落点提示线。
+
+仍需继续处理：
+
+- `Ctrl+F5` 非调试启动可能出现 Qt 平台插件初始化错误。
+- Fontconfig 和 Windows DPI 可能输出警告。
+- 栅格预处理在 UI 主线程同步运行，大数据时会阻塞界面。
+- 测试数据和全球底图路径仍有硬编码。
+- 当前没有形成可直接分发的 Qt/osgEarth 运行时目录。
+- 公共模块和 UI 中仍存在体量较大的函数，需要逐步拆分职责。
+
+## 15. 当前里程碑
+
+截至 2026-08-17 已完成：
+
+- osgEarth、GDAL、Qt、CMake 和 vcpkg 开发环境。
+- 源码、构建、安装和测试数据分离的 Workspace。
+- 三级 CMake Example 结构和公共静态库结构。
+- 本地 GeoTIFF 影像与 DEM 三维显示。
+- Overview 检查、备份、重建和 VRT 隔离闭环。
+- 通用初始 Viewpoint 计算模块。
+- Qt 中嵌入 osgEarth Viewer 并实现鼠标交互。
+- Layers Dock 与 Map/Layer UID 关联。
+- 图层显隐、删除、定位和分类内排序。
+- 菜单、右键、三维视图拖入和图层树指定位置拖入。
+- 外部文件拖放校验、插入提示和异步目标位置保存。
+
+## 16. 下一阶段建议
+
+优先级较高的工作：
+
+1. 把栅格预处理移到后台任务，状态栏显示进度并允许取消。
+2. 清理硬编码路径，增加配置和最近使用数据记录。
+3. 完善 Debug、非调试和安装后的 Qt/osgEarth 插件部署。
+4. 拆分 MainWindow、LayerTreeWidget 和 RasterPreprocessor 中的大函数。
+5. 建立更通用的 Layer Model，为多 Map 和更多数据类型做准备。
+6. 继续学习矢量、模型、点云和 BIM 数据在 osgEarth/OSG 中的组织方式。
+7. 逐步增加图层透明度、重命名、属性信息和数据源管理。
+
+当前最重要的认识是：界面树、业务数据模型和真实渲染对象是三套不同层次。稳定的软件需要用 UID、信号和明确的同步/回滚规则把它们连接起来，而不能只修改界面或只修改 osgEarth Map。

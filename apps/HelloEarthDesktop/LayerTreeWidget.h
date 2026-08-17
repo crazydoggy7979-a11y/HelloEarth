@@ -2,13 +2,19 @@
 
 #include <QTreeWidget>
 #include <QPoint>
+#include <QString>
 
 // 前置声明拖放事件类型。
 //
 // 这里只使用 QDragMoveEvent 和 QDropEvent 的指针，
 // 所以头文件中暂时不需要包含它们的完整定义。
+class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class QMimeData;
+
+class QDragLeaveEvent;
+class QPaintEvent;
 
 // HelloEarth 专用的图层树控件。
 //
@@ -57,7 +63,40 @@ signals:
         int newIndex
     );
 
+    // 当用户把一个受支持的本地栅格文件拖到图层树的合法位置后发出。
+    //
+    // filePath：
+    // 被拖入的本地文件绝对路径。
+    //
+    // targetGroupItem：
+    // 文件最终要进入的分类节点。
+    // 当前只能是 Imagery Layers 或 Elevation Layers。
+    //
+    // insertionIndex：
+    // 新图层在分类节点中的目标位置，采用 Qt 从上到下的索引。
+    // 例如 0 表示插入到该分类的最上方。
+    //
+    // 注意：
+    // 这个信号只表达“用户提出了加载请求”，
+    // LayerTreeWidget 不会立即创建图层树叶子。
+    // 只有真实 osgEarth 图层加载成功后，MainWindow 才会创建叶子节点。
+    void externalRasterFileDropped(
+        const QString& filePath,
+        QTreeWidgetItem* targetGroupItem,
+        int insertionIndex
+    );
+
 protected:
+    // 外部文件第一次进入图层树区域时触发。
+    //
+    // 后续将在这里检查：
+    // 1. 拖入内容是否为本地文件；
+    // 2. 是否只有一个文件；
+    // 3. 文件后缀是否为 tif 或 tiff。
+    void dragEnterEvent(
+        QDragEnterEvent* event
+    ) override;
+
     // 用户开始拖动图层节点时触发。
     //
     // QTreeWidget::startDrag() 返回时，
@@ -85,7 +124,37 @@ protected:
         QDropEvent* event
     ) override;
 
+    // 外部文件离开图层树区域时触发。
+    //
+    // 用于清除自定义的外部文件插入提示线。
+    void dragLeaveEvent(
+        QDragLeaveEvent* event
+    ) override;
+
+    // 绘制图层树内容。
+    //
+    // 先让 QTreeWidget 绘制正常的树节点，
+    // 再在需要时绘制外部文件的插入位置提示线。
+    void paintEvent(
+        QPaintEvent* event
+    ) override;
+
 private:
+    // 外部文件插入提示线当前是否需要显示。
+    bool externalDropIndicatorVisible_ = false;
+
+    // 提示线在 viewport 中的纵向坐标。
+    int externalDropIndicatorY_ = 0;
+
+    // 提示线左端的横向坐标。
+    //
+    // 根据目标节点的树层级设置，
+    // 让提示线从真实图层所在的缩进位置开始。
+    int externalDropIndicatorLeft_ = 0;
+
+    // 清除外部文件插入提示线并刷新图层树。
+    void clearExternalDropIndicator();
+
     // LayerTreeWidget 内部使用的临时拖动标识。
     //
     // Qt 内部移动 QTreeWidgetItem 时可能复制节点再删除原节点，
@@ -103,5 +172,26 @@ private:
     // 这个函数只负责验证树结构，不真正移动节点。
     bool canDropCurrentItem(
         const QPoint& position
+    ) const;
+
+    // 检查外部拖动数据中是否只包含一个受支持的本地 TIFF 文件。
+    //
+    // 该函数只负责检查文件本身，
+    // 不负责判断鼠标当前所在的树节点是否合法。
+    bool containsSingleSupportedRasterFile(
+        const QMimeData* mimeData
+    ) const;
+
+    // 根据鼠标位置计算外部文件最终应当进入的分类节点和插入索引。
+    //
+    // 成功时：
+    // targetGroupItem 指向 Imagery Layers 或 Elevation Layers；
+    // insertionIndex 表示新图层在该分类中的目标位置。
+    //
+    // 失败时返回 false，表示当前位置不允许放置文件。
+    bool resolveExternalDropTarget(
+        const QPoint& position,
+        QTreeWidgetItem*& targetGroupItem,
+        int& insertionIndex
     ) const;
 };

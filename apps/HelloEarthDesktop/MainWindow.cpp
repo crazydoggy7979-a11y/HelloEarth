@@ -14,7 +14,11 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QAbstractItemView>
+#include <QFileInfo>
+#include <QAbstractButton>
+#include <QPushButton>
 
+#include <algorithm>
 #include <vector>
 
 namespace
@@ -97,6 +101,152 @@ MainWindow::MainWindow(QWidget* parent)
     // MainWindow 接管 EarthViewWidget 的界面布局和生命周期。
     setCentralWidget(earthViewWidget_);
 
+    // 当用户把本地 TIFF 文件拖入三维窗口后，
+    // EarthViewWidget 会发出 rasterFilesDropped 信号。
+    //
+    // EarthViewWidget 只负责提取文件路径；
+    // MainWindow 负责询问用户希望作为影像还是 DEM 加载。
+    connect(
+        earthViewWidget_,
+        &EarthViewWidget::rasterFilesDropped,
+        this,
+        [this](
+            const QStringList& filePaths
+        )
+        {
+            // 当前阶段一次只支持加载一个拖入文件。
+            //
+            // EarthViewWidget 已经做过初筛，
+            // 这里再次验证是为了让槽函数自身保持可靠，
+            // 也方便未来其他代码主动发出这个信号。
+            if (filePaths.size() != 1)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Please drop exactly one raster file."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            const QString filePath =
+                filePaths.first();
+
+            if (filePath.isEmpty())
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the file path is empty."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            const QFileInfo fileInfo(
+                filePath
+            );
+
+            // 创建本次拖入操作使用的类型选择窗口。
+            QMessageBox typeDialog(this);
+
+            typeDialog.setWindowTitle(
+                QStringLiteral(
+                    "Choose Raster Layer Type"
+                )
+            );
+
+            typeDialog.setIcon(
+                QMessageBox::Question
+            );
+
+            typeDialog.setText(
+                QStringLiteral(
+                    "How should this raster be loaded?"
+                )
+            );
+
+            // 显示具体文件名，让用户确认当前选择的是哪份数据。
+            typeDialog.setInformativeText(
+                QStringLiteral(
+                    "File: %1"
+                ).arg(
+                    fileInfo.fileName()
+                )
+            );
+
+            // TIFF 既可能是颜色影像，也可能是 DEM。
+            //
+            // 这里不尝试根据波段数或数据类型自动猜测，
+            // 而是让用户明确决定其业务用途。
+            auto* imageryButton =
+                typeDialog.addButton(
+                    QStringLiteral(
+                        "Load as Imagery"
+                    ),
+                    QMessageBox::AcceptRole
+                );
+
+            auto* elevationButton =
+                typeDialog.addButton(
+                    QStringLiteral(
+                        "Load as DEM"
+                    ),
+                    QMessageBox::AcceptRole
+                );
+
+            // Cancel 使用 Qt 的标准取消按钮。
+            //
+            // 用户取消时不会产生任何加载请求。
+            typeDialog.addButton(
+                QMessageBox::Cancel
+            );
+
+            // exec() 会显示模态窗口并等待用户完成选择。
+            typeDialog.exec();
+
+            QAbstractButton* selectedButton =
+                typeDialog.clickedButton();
+
+            if (selectedButton == imageryButton)
+            {
+                // 统一入口会再次检查路径和后缀，
+                // 然后调用 EarthViewWidget::addImageLayer()。
+                requestRasterLayerLoading(
+                    filePath,
+                    RasterLayerType::Imagery
+                );
+
+                return;
+            }
+
+            if (selectedButton == elevationButton)
+            {
+                // 使用同一个文件路径，
+                // 但将其作为高程数据交给 DEM 加载流程。
+                requestRasterLayerLoading(
+                    filePath,
+                    RasterLayerType::Elevation
+                );
+
+                return;
+            }
+
+            // selectedButton 为 Cancel 按钮、nullptr，
+            // 或其他未识别按钮时，都视为用户取消。
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Raster loading canceled."
+                ),
+                3000
+            );
+        }
+    );
+
     // 当用户点击 File -> Open Imagery... 时，
     // 打开文件选择窗口并将选中的影像交给 EarthViewWidget 加载。
     connect(
@@ -136,13 +286,13 @@ MainWindow::MainWindow(QWidget* parent)
                 return;
             }
 
-            // 调用统一影像加载入口。
+            // 文件选择窗口只负责取得路径。
             //
-            // addImageLayer() 会完成金字塔预处理、
-            // TIFF/VRT 实际路径选择、GDALImageLayer 创建、
-            // osgEarth Map 添加以及 Layers Dock 通知。
-            earthViewWidget_->addImageLayer(
-                imagePath
+            // 路径验证、格式检查以及具体加载分流，
+            // 统一交给 requestRasterLayerLoading()。
+            requestRasterLayerLoading(
+                imagePath,
+                RasterLayerType::Imagery
             );
         }
     );
@@ -178,17 +328,9 @@ MainWindow::MainWindow(QWidget* parent)
                 return;
             }
 
-            // 调用统一的高程图层加载入口。
-            //
-            // addElevationLayer() 内部负责：
-            // 1. 检查并预处理 DEM；
-            // 2. 检查或构建金字塔；
-            // 3. 创建 GDALElevationLayer；
-            // 4. 将高程图层加入 osgEarth Map；
-            // 5. 计算 DEM 对应的初始视点；
-            // 6. 发出 elevationLayerAdded 信号。
-            earthViewWidget_->addElevationLayer(
-                elevationPath
+            requestRasterLayerLoading(
+                elevationPath,
+                RasterLayerType::Elevation
             );
         }
     );
@@ -200,13 +342,13 @@ MainWindow::MainWindow(QWidget* parent)
     layerTree_ = new LayerTreeWidget(layerDock);
     layerTree_->setHeaderLabel("Layers");
 
-    // 开启图层树内部的拖放操作。
+    // 同时允许：
+    // 1. 图层树内部的真实图层顺序调整；
+    // 2. 从 Windows 资源管理器拖入外部栅格文件。
     //
-    // InternalMove 表示当前阶段只允许移动
-    // layerTree_ 自己内部已有的节点，
-    // 暂时还不处理从 Windows 文件夹拖进来的外部文件。
+    // LayerTreeWidget 会根据 event->source() 区分两种拖放来源。
     layerTree_->setDragDropMode(
-        QAbstractItemView::InternalMove
+        QAbstractItemView::DragDrop
     );
 
     // 明确允许用户从图层树中拖起节点。
@@ -237,6 +379,260 @@ MainWindow::MainWindow(QWidget* parent)
         &LayerTreeWidget::layerItemMoved,
         this,
         &MainWindow::handleLayerItemMoved
+    );
+
+    // 当用户从 Windows 资源管理器把单个 TIFF
+    // 拖到图层树的合法位置后，处理对应的加载请求。
+    connect(
+        layerTree_,
+        &LayerTreeWidget::externalRasterFileDropped,
+        this,
+        [this](
+            const QString& filePath,
+            QTreeWidgetItem* targetGroupItem,
+            int insertionIndex
+        )
+        {
+            // 信号必须提供一个有效的目标分类节点。
+            if (targetGroupItem == nullptr)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target layer group is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 当前只允许同时进行一个栅格图层加载请求。
+            //
+            // 这样可以避免后一次拖放覆盖前一次尚未完成的
+            // 目标分类和插入位置。
+            if (pendingRasterTreeInsertion_.active)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Another dropped raster is still being loaded."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            bool itemTypeIsValid = false;
+
+            const int itemTypeValue =
+                targetGroupItem
+                    ->data(
+                        0,
+                        ItemTypeRole
+                    )
+                    .toInt(
+                        &itemTypeIsValid
+                    );
+
+            if (!itemTypeIsValid)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target group type is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            const LayerTreeItemType targetItemType =
+                static_cast<LayerTreeItemType>(
+                    itemTypeValue
+                );
+
+            RasterLayerType rasterLayerType;
+
+            if (
+                targetItemType ==
+                LayerTreeItemType::ImageryGroup
+            )
+            {
+                rasterLayerType =
+                    RasterLayerType::Imagery;
+            }
+            else if (
+                targetItemType ==
+                LayerTreeItemType::ElevationGroup
+            )
+            {
+                rasterLayerType =
+                    RasterLayerType::Elevation;
+            }
+            else
+            {
+                // resolveExternalDropTarget() 主要根据树层级判断目标位置，
+                // MainWindow 在这里再根据 ItemTypeRole 做业务级验证。
+                //
+                // Map 节点、真实图层节点或未来增加的其他分类
+                // 都不能进入当前 TIFF 加载流程。
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target is not a raster layer group."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            bool mapUidIsValid = false;
+
+            const int mapUid =
+                targetGroupItem
+                    ->data(
+                        0,
+                        MapUidRole
+                    )
+                    .toInt(
+                        &mapUidIsValid
+                    );
+
+            if (
+                !mapUidIsValid ||
+                mapUid < 0
+            )
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target map is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 当前版本只管理一个默认 Map。
+            //
+            // 检查 UID 可以防止把文件加载到界面上已经失效、
+            // 或者并不属于当前 Map 的分类节点中。
+            if (
+                mapUid !=
+                defaultMapTreeItems_.mapUid
+            )
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target map is not available."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 再检查目标分类节点是否确实是当前 Map
+            // 记录的 Imagery Layers 或 Elevation Layers。
+            if (
+                rasterLayerType ==
+                RasterLayerType::Imagery &&
+                targetGroupItem !=
+                    defaultMapTreeItems_.imageryGroupItem
+            )
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the imagery group is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            if (
+                rasterLayerType ==
+                RasterLayerType::Elevation &&
+                targetGroupItem !=
+                    defaultMapTreeItems_.elevationGroupItem
+            )
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the elevation group is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 合法插入索引的范围是：
+            //
+            // 0 到 childCount()，两端都包含。
+            //
+            // 例如当前有 3 个图层：
+            // 0 表示最上方；
+            // 3 表示最后一个图层的下方。
+            if (
+                insertionIndex < 0 ||
+                insertionIndex >
+                    targetGroupItem->childCount()
+            )
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot load dropped raster: "
+                        "the target insertion position is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 在启动异步加载前保存用户选择的目标位置。
+            //
+            // 必须先保存再调用 requestRasterLayerLoading()，
+            // 以保证后续即使加载流程很快完成，
+            // imageryLayerAdded 或 elevationLayerAdded
+            // 也能读到正确的插入请求。
+            pendingRasterTreeInsertion_.active =
+                true;
+
+            pendingRasterTreeInsertion_.layerType =
+                rasterLayerType;
+
+            pendingRasterTreeInsertion_.mapUid =
+                mapUid;
+
+            pendingRasterTreeInsertion_.insertionIndex =
+                insertionIndex;
+
+            // 复用菜单、右键加载和三维窗口拖入
+            // 已经使用的统一栅格加载入口。
+            const bool loadingStarted =
+                requestRasterLayerLoading(
+                    filePath,
+                    rasterLayerType
+                );
+
+            if (!loadingStarted)
+            {
+                // 如果请求在路径检查、格式检查或底层入口处被拒绝，
+                // 就立即清除尚未真正生效的插入请求。
+                pendingRasterTreeInsertion_ =
+                    PendingRasterTreeInsertion{};
+            }
+        }
     );
 
     // 使用自定义右键菜单。
@@ -514,10 +910,113 @@ MainWindow::MainWindow(QWidget* parent)
             const QString& layerDisplayName
         )
         {
-            addImageryLayerTreeItem(
-                mapUid,
-                layerUid,
-                layerDisplayName
+            // 默认加载入口仍然把新影像放到最上方。
+            int insertionIndex = 0;
+
+            // 判断当前成功加入 Map 的影像，
+            // 是否对应一次从图层树拖入的待处理请求。
+            const bool usesPendingInsertion =
+                pendingRasterTreeInsertion_.active &&
+                pendingRasterTreeInsertion_.layerType ==
+                    RasterLayerType::Imagery &&
+                pendingRasterTreeInsertion_.mapUid ==
+                    mapUid;
+
+            if (usesPendingInsertion)
+            {
+                insertionIndex =
+                    pendingRasterTreeInsertion_
+                        .insertionIndex;
+            }
+
+            // 真实 osgEarth 图层已经创建成功，
+            // 现在才创建与其 UID 关联的树节点。
+            QTreeWidgetItem* addedItem =
+                addImageryLayerTreeItem(
+                    mapUid,
+                    layerUid,
+                    layerDisplayName,
+                    insertionIndex
+                );
+
+            // 普通菜单加载、右键加载和三维窗口拖入
+            // 不需要处理指定位置。
+            if (!usesPendingInsertion)
+            {
+                return;
+            }
+
+            // 这次待处理请求已经被对应的 layerAdded 信号消费。
+            //
+            // 无论后面的树节点创建或顺序同步是否成功，
+            // 都不能让 active 一直保持为 true。
+            pendingRasterTreeInsertion_ =
+                PendingRasterTreeInsertion{};
+
+            if (addedItem == nullptr)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The imagery layer was added, "
+                        "but its tree item could not be created."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            QTreeWidgetItem* groupItem =
+                addedItem->parent();
+
+            if (groupItem == nullptr)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The imagery layer was added, "
+                        "but its target group is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // addImageryLayerTreeItem() 内部可能通过 std::clamp()
+            // 修正原始 insertionIndex，
+            // 所以这里重新读取节点最终实际所在的位置。
+            const int actualInsertionIndex =
+                groupItem->indexOfChild(
+                    addedItem
+                );
+
+            if (actualInsertionIndex < 0)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The imagery tree item position is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // osgEarth 中的新图层刚加入时已经处于最上层，
+            // Qt 节点也在索引 0 时，两边顺序天然一致。
+            if (actualInsertionIndex == 0)
+            {
+                return;
+            }
+
+            // 对 osgEarth 来说，新图层的初始位置对应 Qt 索引 0。
+            //
+            // 当前 Qt 节点已经位于用户指定的新索引，
+            // 因此复用已有的图层顺序同步和失败回滚逻辑。
+            handleLayerItemMoved(
+                addedItem,
+                0,
+                actualInsertionIndex
             );
         }
     );
@@ -537,10 +1036,99 @@ MainWindow::MainWindow(QWidget* parent)
             const QString& layerDisplayName
         )
         {
-            addElevationLayerTreeItem(
-                mapUid,
-                layerUid,
-                layerDisplayName
+            // 普通 DEM 加载默认插入最上方。
+            int insertionIndex = 0;
+
+            const bool usesPendingInsertion =
+                pendingRasterTreeInsertion_.active &&
+                pendingRasterTreeInsertion_.layerType ==
+                    RasterLayerType::Elevation &&
+                pendingRasterTreeInsertion_.mapUid ==
+                    mapUid;
+
+            if (usesPendingInsertion)
+            {
+                insertionIndex =
+                    pendingRasterTreeInsertion_
+                        .insertionIndex;
+            }
+
+            QTreeWidgetItem* addedItem =
+                addElevationLayerTreeItem(
+                    mapUid,
+                    layerUid,
+                    layerDisplayName,
+                    insertionIndex
+                );
+
+            if (!usesPendingInsertion)
+            {
+                return;
+            }
+
+            // 当前拖入请求已经完成对应关系匹配，
+            // 及时恢复为空闲状态。
+            pendingRasterTreeInsertion_ =
+                PendingRasterTreeInsertion{};
+
+            if (addedItem == nullptr)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The DEM layer was added, "
+                        "but its tree item could not be created."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            QTreeWidgetItem* groupItem =
+                addedItem->parent();
+
+            if (groupItem == nullptr)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The DEM layer was added, "
+                        "but its target group is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            const int actualInsertionIndex =
+                groupItem->indexOfChild(
+                    addedItem
+                );
+
+            if (actualInsertionIndex < 0)
+            {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "The DEM tree item position is invalid."
+                    ),
+                    5000
+                );
+
+                return;
+            }
+
+            // 目标本来就是最上方时，无须额外移动 osgEarth 图层。
+            if (actualInsertionIndex == 0)
+            {
+                return;
+            }
+
+            // 新 DEM 在 osgEarth 中的初始同类位置视为最上方，
+            // 将它同步到用户在 Qt 树中指定的位置。
+            handleLayerItemMoved(
+                addedItem,
+                0,
+                actualInsertionIndex
             );
         }
     );
@@ -660,6 +1248,214 @@ MainWindow::MainWindow(QWidget* parent)
 
     // 创建状态栏。
     statusBar()->showMessage("Ready");
+}
+
+bool MainWindow::requestRasterLayerLoading(
+    const QString& filePath,
+    RasterLayerType layerType
+)
+{
+    // 去掉路径首尾可能存在的空白字符。
+    //
+    // 正常的 QFileDialog 路径通常不会包含这些空白，
+    // 但拖放、复制粘贴或未来其他输入方式可能产生这种情况。
+    const QString trimmedFilePath =
+        filePath.trimmed();
+
+    if (trimmedFilePath.isEmpty())
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot load raster: the file path is empty."
+            ),
+            5000
+        );
+
+        return false;
+    }
+
+    // QFileInfo 只负责检查文件系统信息，
+    // 不会在这里真正打开或读取栅格数据。
+    const QFileInfo fileInfo(
+        trimmedFilePath
+    );
+
+    // 路径必须真实存在。
+    if (!fileInfo.exists())
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot load raster: the file does not exist."
+            ),
+            5000
+        );
+
+        return false;
+    }
+
+    // 当前只接受单个普通文件。
+    //
+    // 如果用户未来把文件夹拖进程序，
+    // 这里会拒绝，而不会错误地把目录当作栅格数据。
+    if (!fileInfo.isFile())
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot load raster: the path is not a file."
+            ),
+            5000
+        );
+
+        return false;
+    }
+
+    // 当前进程必须具有读取该文件的权限。
+    if (!fileInfo.isReadable())
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot load raster: the file is not readable."
+            ),
+            5000
+        );
+
+        return false;
+    }
+
+    // suffix() 返回不包含点号的后缀。
+    //
+    // 例如：
+    // image.tif  -> tif
+    // image.TIFF -> TIFF
+    //
+    // 转换成小写后，判断就不再区分大小写。
+    const QString suffix =
+        fileInfo
+            .suffix()
+            .toLower();
+
+    // 当前阶段只正式支持 GeoTIFF 文件。
+    //
+    // 注意：后缀检查只是快速初筛。
+    // 一个文件名为 .tif 并不代表其内容一定有效，
+    // 后续仍然会经过栅格预处理模块和 GDAL 的严格检查。
+    const bool isSupportedRaster =
+        suffix == QStringLiteral("tif") ||
+        suffix == QStringLiteral("tiff");
+
+    if (!isSupportedRaster)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Unsupported raster format: .%1"
+            ).arg(suffix),
+            5000
+        );
+
+        return false;
+    }
+
+    // 三维控件负责真正创建 osgEarth Layer、
+    // 计算 Viewpoint 以及在相机飞行后加入 Map。
+    if (earthViewWidget_ == nullptr)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot load raster: "
+                "the Earth view is not available."
+            ),
+            5000
+        );
+
+        return false;
+    }
+
+    // 使用规范的绝对路径交给底层加载逻辑。
+    //
+    // 这样加载结果不依赖程序当前工作目录，
+    // 也方便未来从文件拖放事件中接收路径。
+    const QString absoluteFilePath =
+        fileInfo.absoluteFilePath();
+
+    bool loadingRequested = false;
+    QString layerTypeDisplayName;
+
+    // 根据用户指定的用途，
+    // 把同一份 TIFF 分发给不同的 osgEarth 图层加载流程。
+    switch (layerType)
+    {
+        case RasterLayerType::Imagery:
+        {
+            layerTypeDisplayName =
+                QStringLiteral("imagery");
+
+            loadingRequested =
+                earthViewWidget_->addImageLayer(
+                    absoluteFilePath
+                );
+
+            break;
+        }
+
+        case RasterLayerType::Elevation:
+        {
+            layerTypeDisplayName =
+                QStringLiteral("DEM");
+
+            loadingRequested =
+                earthViewWidget_->addElevationLayer(
+                    absoluteFilePath
+                );
+
+            break;
+        }
+
+        default:
+        {
+            // 当前枚举理论上只存在 Imagery 和 Elevation。
+            // 保留 default 可以防止未来增加枚举值后，
+            // 忘记在这里增加对应加载逻辑。
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot load raster: "
+                    "unsupported layer type."
+                ),
+                5000
+            );
+
+            return false;
+        }
+    }
+
+    if (!loadingRequested)
+    {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Failed to start loading %1: %2"
+            )
+                .arg(layerTypeDisplayName)
+                .arg(fileInfo.fileName()),
+            5000
+        );
+
+        return false;
+    }
+
+    // 当前 addImageLayer() 和 addElevationLayer()
+    // 采用“先计算并移动视点，飞行结束后再加入 Map”的流程。
+    //
+    // 因此这里提示的是请求已经建立，
+    // 不表示图层已经立即完成全部加载和渲染。
+    statusBar()->showMessage(
+        QStringLiteral(
+            "Loading %1: %2"
+        )
+            .arg(layerTypeDisplayName)
+            .arg(fileInfo.fileName()),
+        3000
+    );
+
+    return true;
 }
 
 MainWindow::MapTreeItems MainWindow::createMapTreeItems(int mapUid, const QString& mapDisplayName)
@@ -785,7 +1581,12 @@ MainWindow::MapTreeItems MainWindow::createMapTreeItems(int mapUid, const QStrin
     return items;
 }
 
-void MainWindow::addImageryLayerTreeItem(int mapUid, int layerUid, const QString& layerDisplayName)
+QTreeWidgetItem* MainWindow::addImageryLayerTreeItem(
+    int mapUid,
+    int layerUid,
+    const QString& layerDisplayName,
+    int insertionIndex
+)
 {
     // 当前版本只有一个默认 Map。
     //
@@ -796,7 +1597,7 @@ void MainWindow::addImageryLayerTreeItem(int mapUid, int layerUid, const QString
     // 从多个 MapTreeItems 中查找正确的那一组。
     if (defaultMapTreeItems_.mapUid != mapUid)
     {
-        return;
+        return nullptr;;
     }
 
     // 先创建一个尚未加入图层树的独立叶子节点。
@@ -805,15 +1606,37 @@ void MainWindow::addImageryLayerTreeItem(int mapUid, int layerUid, const QString
 
     // 将新加载的影像插入 Imagery Layers 的第 0 个位置。
     //
-    // Qt 的子节点索引从 0 开始，因此第 0 个位置就是界面最上方。
-    // 这样 Layers Dock 的显示习惯与 ArcGIS 类似：
-    // 后加载的影像位于上方，先加载的全球底图位于下方。
-    defaultMapTreeItems_
-        .imageryGroupItem
-        ->insertChild(
+    QTreeWidgetItem* imageryGroupItem =
+        defaultMapTreeItems_.imageryGroupItem;
+
+    if (imageryGroupItem == nullptr)
+    {
+        delete imageryLayerItem;
+        return nullptr;;
+    }
+
+    // 用户松开鼠标到真实图层加入 Map 之间存在一段异步时间。
+    //
+    // 在这段时间里，树结构理论上可能发生变化，
+    // 所以不能完全相信之前保存的 insertionIndex。
+    //
+    // std::clamp() 会把索引限制在：
+    // 0 到当前 childCount() 之间。
+    const int safeInsertionIndex =
+        std::clamp(
+            insertionIndex,
             0,
-            imageryLayerItem
+            imageryGroupItem->childCount()
         );
+
+    // 按指定位置插入新的影像图层节点。
+    //
+    // 如果调用者没有传入 insertionIndex，
+    // 头文件中的默认值 0 会让它继续插入最上方。
+    imageryGroupItem->insertChild(
+        safeInsertionIndex,
+        imageryLayerItem
+    );
 
     // 设置用户在 Layers Dock 中看到的图层名称。
     imageryLayerItem->setText(
@@ -866,9 +1689,20 @@ void MainWindow::addImageryLayerTreeItem(int mapUid, int layerUid, const QString
         0,
         Qt::Checked
     );
+
+    // 节点已经交给 imageryGroupItem 管理。
+    //
+    // 返回的是非拥有型指针，
+    // 调用者不能手动释放它。
+    return imageryLayerItem;
 }
 
-void MainWindow::addElevationLayerTreeItem(int mapUid, int layerUid, const QString& layerDisplayName)
+QTreeWidgetItem* MainWindow::addElevationLayerTreeItem(
+    int mapUid,
+    int layerUid,
+    const QString& layerDisplayName,
+    int insertionIndex
+)
 {
     // 当前版本只管理一个默认 Map。
     //
@@ -876,7 +1710,7 @@ void MainWindow::addElevationLayerTreeItem(int mapUid, int layerUid, const QStri
     // 说明这个高程图层不属于当前 Map，因此暂时不创建树节点。
     if (defaultMapTreeItems_.mapUid != mapUid)
     {
-        return;
+        return nullptr;;
     }
 
     // 创建一个暂时还没有加入图层树的独立叶子节点。
@@ -886,12 +1720,31 @@ void MainWindow::addElevationLayerTreeItem(int mapUid, int layerUid, const QStri
     // 将新加载的 DEM 插入 Elevation Layers 分类的最上方。
     //
     // 索引 0 代表第一个子节点，也就是界面中最上方的位置。
-    defaultMapTreeItems_
-        .elevationGroupItem
-        ->insertChild(
+    QTreeWidgetItem* elevationGroupItem =
+        defaultMapTreeItems_.elevationGroupItem;
+
+    if (elevationGroupItem == nullptr)
+    {
+        delete elevationLayerItem;
+        return nullptr;;
+    }
+
+    // 把之前记录的目标位置限制在当前合法索引范围内。
+    //
+    // 如果当前有 3 个 DEM 节点，合法范围就是 0～3：
+    // 0 表示最上方，3 表示最下方。
+    const int safeInsertionIndex =
+        std::clamp(
+            insertionIndex,
             0,
-            elevationLayerItem
+            elevationGroupItem->childCount()
         );
+
+    // 按指定位置插入新的 DEM 图层节点。
+    elevationGroupItem->insertChild(
+        safeInsertionIndex,
+        elevationLayerItem
+    );
 
     // 设置用户在 Layers Dock 中看到的 DEM 文件名。
     elevationLayerItem->setText(
@@ -945,6 +1798,9 @@ void MainWindow::addElevationLayerTreeItem(int mapUid, int layerUid, const QStri
         0,
         Qt::Checked
     );
+
+    // 节点现在由 elevationGroupItem 所在的树结构管理。
+    return elevationLayerItem;
 }
 
 void MainWindow::removeLayerTreeItem(

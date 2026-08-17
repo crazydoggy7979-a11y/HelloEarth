@@ -11,6 +11,11 @@
 #include <osgGA/GUIEventAdapter>
 #include <QWheelEvent>
 #include <QFileInfo>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
 
 #include <osg/Camera>
 #include <osgEarth/GDAL>
@@ -22,6 +27,78 @@
 
 namespace
 {
+    // 判断一份拖入数据是否正好包含一个
+    // 当前三维窗口允许接收的本地栅格文件。
+    //
+    // 这里只进行拖放阶段的快速初筛，
+    // 目的是决定鼠标显示允许还是禁止图标。
+    //
+    // 文件真正加载前，MainWindow 中的
+    // requestRasterLayerLoading() 仍会再次完整验证。
+    bool containsSingleSupportedRasterFile(
+        const QMimeData* mimeData
+    )
+    {
+        // 拖放数据对象必须存在，并且包含文件 URL。
+        if (
+            mimeData == nullptr ||
+            !mimeData->hasUrls()
+        )
+        {
+            return false;
+        }
+
+        const QList<QUrl> urls =
+            mimeData->urls();
+
+        // 当前阶段一次只处理一个文件。
+        //
+        // 接口已经使用 QStringList 为多文件预留空间，
+        // 但在加载队列完成前暂时拒绝多文件拖入。
+        if (urls.size() != 1)
+        {
+            return false;
+        }
+
+        const QUrl& url =
+            urls.first();
+
+        // 只接受 Windows 文件系统中的本地文件。
+        //
+        // 网页地址、网络 URL 或普通文本不能作为
+        // 当前 osgEarth 本地栅格加载请求。
+        if (!url.isLocalFile())
+        {
+            return false;
+        }
+
+        const QFileInfo fileInfo(
+            url.toLocalFile()
+        );
+
+        if (
+            !fileInfo.exists() ||
+            !fileInfo.isFile() ||
+            !fileInfo.isReadable()
+        )
+        {
+            return false;
+        }
+
+        const QString suffix =
+            fileInfo
+                .suffix()
+                .toLower();
+
+        // 当前阶段只接受 TIFF 栅格。
+        //
+        // 文件内容是否真的是有效 GeoTIFF，
+        // 后续仍然由栅格预处理模块和 GDAL 判断。
+        return
+            suffix == QStringLiteral("tif") ||
+            suffix == QStringLiteral("tiff");
+    }
+
     // 将 Qt 的鼠标按键枚举转换为 OSG 使用的按键编号。
     //
     // OSG 约定：
@@ -63,6 +140,13 @@ EarthViewWidget::EarthViewWidget(QWidget* parent)
 
     // 必须在控件的 OpenGL Context 创建之前设置格式。
     setFormat(format);
+
+    // 允许 EarthViewWidget 接收来自 Windows 文件管理器
+    // 或其他支持 Qt 拖放协议的外部文件。
+    //
+    // 只有开启这个属性后，Qt 才会把 dragEnterEvent、
+    // dragMoveEvent 和 dropEvent 发送给当前控件。
+    setAcceptDrops(true);
 
     // 每次更新时重绘整个三维区域。
     //
@@ -150,6 +234,17 @@ bool EarthViewWidget::addImageLayer(const QString& sourcePath)
         std::cerr
             << "Cannot add imagery: source path is empty."
             << std::endl;
+
+        return false;
+    }
+
+    // 已经有一份栅格正在等待视点飞行结束时，
+    // 拒绝新的影像加载请求。
+    if (rasterLayerLoadPending_)
+    {
+        qWarning()
+            << "Cannot add imagery: "
+            << "another raster layer is currently loading.";
 
         return false;
     }
@@ -416,6 +511,8 @@ bool EarthViewWidget::addImageLayer(const QString& sourcePath)
         return attachImageryLayerToMap();
     }
 
+    rasterLayerLoadPending_ = true;
+
     // 此时局部影像已经打开并计算出 Viewpoint，
     // 但仍然没有加入 Map，也不会参与飞行过程中的图层调度。
     manipulator_->setViewpoint(
@@ -467,6 +564,12 @@ bool EarthViewWidget::addImageLayer(const QString& sourcePath)
             const bool layerAdded =
                 attachImageryLayerToMap();
 
+
+            // 无论图层最终加入成功还是失败，
+            // 当前延迟加载任务都已经结束，
+            // 因此重新允许下一份栅格加载请求。
+            rasterLayerLoadPending_ = false;
+
             if (!layerAdded)
             {
                 qWarning()
@@ -500,6 +603,17 @@ bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
     if (sourcePath.isEmpty())
     {
         qWarning() << "Cannot add elevation layer: the source path is empty.";
+        return false;
+    }
+
+    // 已经有一份栅格正在等待视点飞行结束时，
+    // 拒绝新的影像加载请求。
+    if (rasterLayerLoadPending_)
+    {
+        qWarning()
+            << "Cannot add elevation layer: "
+            << "another raster layer is currently loading.";
+
         return false;
     }
 
@@ -743,6 +857,8 @@ bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
         return attachElevationLayerToMap();
     }
 
+    rasterLayerLoadPending_ = true;
+
     // DEM 已经打开且 Viewpoint 已经计算完成，
     // 但此时仍未加入 Map，因此不会参与飞行过程中的地形重建。
     manipulator_->setViewpoint(
@@ -794,6 +910,11 @@ bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
             const bool layerAdded =
                 attachElevationLayerToMap();
 
+            // 无论图层最终加入成功还是失败，
+            // 当前延迟加载任务都已经结束，
+            // 因此重新允许下一份栅格加载请求。
+            rasterLayerLoadPending_ = false;
+
             if (!layerAdded)
             {
                 qWarning()
@@ -826,6 +947,20 @@ bool EarthViewWidget::moveToLayer(
     double durationSeconds
 )
 {
+    // 栅格加载任务依赖当前正在进行的视点过渡。
+    //
+    // 如果此时再执行 Zoom to Layer，新的 setViewpoint()
+    // 会覆盖加载任务的目标视点，因此暂时拒绝本次导航请求。
+    if (rasterLayerLoadPending_)
+    {
+        qWarning()
+            << "Cannot move to layer: "
+            << "a raster layer is currently waiting "
+            << "for its camera transition to finish.";
+
+        return false;
+    }
+
     // 相机移动必须依赖已经创建完成的 EarthManipulator。
     //
     // 如果三维窗口尚未完成初始化，
@@ -1679,6 +1814,114 @@ void EarthViewWidget::paintGL()
     // 这里不使用 viewer_->run()，
     // 因为 Qt 才是整个桌面程序的主事件循环。
     viewer_->frame();
+}
+
+void EarthViewWidget::dragEnterEvent(
+    QDragEnterEvent* event
+)
+{
+    if (event == nullptr)
+    {
+        return;
+    }
+
+    // 栅格加载任务进行期间不接受新的文件，
+    // 从鼠标进入三维窗口时就显示禁止标志。
+    if (rasterLayerLoadPending_)
+    {
+        event->ignore();
+        return;
+    }
+
+    // 只有正好拖入一个受支持的本地 TIFF 时，
+    // 才接受本次拖入操作。
+    if (!containsSingleSupportedRasterFile(
+            event->mimeData()))
+    {
+        event->ignore();
+        return;
+    }
+
+    // 接受 Windows 文件管理器提出的拖放动作。
+    //
+    // 这里不会移动或删除原文件，
+    // 只是允许程序读取它的路径。
+    event->acceptProposedAction();
+}
+
+void EarthViewWidget::dragMoveEvent(
+    QDragMoveEvent* event
+)
+{
+    if (event == nullptr)
+    {
+        return;
+    }
+
+    // 用户拖动文件停留在三维窗口期间，
+    // 持续检查加载任务状态和文件合法性。
+    if (
+        rasterLayerLoadPending_ ||
+        !containsSingleSupportedRasterFile(
+            event->mimeData()
+        )
+    )
+    {
+        event->ignore();
+        return;
+    }
+
+    event->acceptProposedAction();
+}
+
+void EarthViewWidget::dropEvent(
+    QDropEvent* event
+)
+{
+    if (event == nullptr)
+    {
+        return;
+    }
+
+    // 松开鼠标时进行最终验证。
+    //
+    // 即使 dragEnterEvent 和 dragMoveEvent 已经验证过，
+    // dropEvent 仍然不能直接信任之前的状态。
+    if (
+        rasterLayerLoadPending_ ||
+        !containsSingleSupportedRasterFile(
+            event->mimeData()
+        )
+    )
+    {
+        event->ignore();
+        return;
+    }
+
+    const QList<QUrl> urls =
+        event->mimeData()->urls();
+
+    const QFileInfo fileInfo(
+        urls.first().toLocalFile()
+    );
+
+    QStringList filePaths;
+
+    // 转换成绝对路径，避免后续加载依赖程序工作目录。
+    filePaths.append(
+        fileInfo.absoluteFilePath()
+    );
+
+    // 告诉 Qt 本次放置已经被当前控件接受。
+    event->acceptProposedAction();
+
+    // EarthViewWidget 只报告拖入了哪些文件。
+    //
+    // 是否作为 Imagery 或 DEM 加载，
+    // 将由 MainWindow 在下一步中询问用户。
+    emit rasterFilesDropped(
+        filePaths
+    );
 }
 
 void EarthViewWidget::mousePressEvent(

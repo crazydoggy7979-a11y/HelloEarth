@@ -20,6 +20,10 @@ class QMouseEvent;
 
 class QWheelEvent;
 
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
+
 // HelloEarth 的三维显示控件。
 //
 // Qt 负责 QWidget、OpenGL Context 和 Framebuffer；
@@ -187,6 +191,23 @@ signals:
         const QString& mapDisplayName
     );
 
+    // 当用户把一组受支持的本地栅格文件
+    // 拖放到三维显示区域后发出。
+    //
+    // filePaths 保存拖入文件的本地绝对路径。
+    //
+    // EarthViewWidget 只负责接收拖放事件并提取文件路径，
+    // 不在这里弹出“影像或 DEM”的类型选择窗口，
+    // 也不直接决定应该调用哪一种加载函数。
+    //
+    // MainWindow 将订阅这个信号，负责：
+    // 1. 判断当前是否只处理一个文件；
+    // 2. 询问用户希望作为 Imagery 还是 Elevation 加载；
+    // 3. 调用统一的 requestRasterLayerLoading()。
+    void rasterFilesDropped(
+        const QStringList& filePaths
+    );
+
     // 影像图层成功加入 osgEarth Map 后发出该信号。
     //
     // mapUid：
@@ -238,6 +259,31 @@ protected:
     // 后续将在这里调用 viewer_->frame()。
     void paintGL() override;
 
+    // 拖动对象第一次进入三维控件时，由 Qt 调用。
+    //
+    // 这里将快速检查拖动数据是否包含
+    // 当前支持的本地 TIFF 文件，
+    // 并决定鼠标显示允许还是禁止图标。
+    void dragEnterEvent(
+        QDragEnterEvent* event
+    ) override;
+
+    // 拖动对象在三维控件内部移动时，由 Qt 持续调用。
+    //
+    // 当前三维区域内部没有更细的分类落点，
+    // 因此主要用于持续维持正确的允许或禁止状态。
+    void dragMoveEvent(
+        QDragMoveEvent* event
+    ) override;
+
+    // 用户在三维控件中松开鼠标时，由 Qt 调用。
+    //
+    // 这里将提取本地文件路径，
+    // 并通过 rasterFilesDropped 信号交给 MainWindow。
+    void dropEvent(
+        QDropEvent* event
+    ) override;
+
     // Qt 检测到鼠标按键按下时调用。
     void mousePressEvent(QMouseEvent* event) override;
 
@@ -273,6 +319,22 @@ private:
     // 它主要向 OSG 提供窗口尺寸、GraphicsContext 状态
     // 以及后续传递鼠标键盘事件所需的 EventQueue。
     osg::ref_ptr<osgViewer::GraphicsWindowEmbedded> graphicsWindow_;
+
+    // 表示当前是否存在一个正在等待视点飞行完成的
+    // 栅格图层加载任务。
+    //
+    // false：
+    // 当前没有延迟加载任务，可以接受新的影像或 DEM。
+    //
+    // true：
+    // 已经有一份影像或 DEM 完成了预处理和独立打开，
+    // 当前正在等待 EarthManipulator 完成视点过渡，
+    // 飞行结束后才会把它正式加入 Map。
+    //
+    // 当前阶段一次只允许存在一个这样的任务，
+    // 避免连续加载多个文件时，后一次 setViewpoint()
+    // 覆盖前一次视点目标，导致图层在错误的位置加入 Map。
+    bool rasterLayerLoadPending_ = false;
 
     // osgEarth 地图场景的根节点。
     //

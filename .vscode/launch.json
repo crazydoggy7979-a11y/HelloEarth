@@ -34,6 +34,17 @@
                     // 如果将来升级 OSG，目录中的版本号可能需要同步修改。
                     "name": "OSG_LIBRARY_PATH",
                     "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                },
+                {
+                    // PROJ坐标转换数据库所在目录。
+                    // 该目录中包含proj.db。
+                    "name": "PROJ_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/proj"
+                },
+                {
+                    // GDAL运行时数据文件所在目录。
+                    "name": "GDAL_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/gdal"
                 }
             ],
 
@@ -70,6 +81,17 @@
                     // 如果将来升级 OSG，目录中的版本号可能需要同步修改。
                     "name": "OSG_LIBRARY_PATH",
                     "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                },
+                {
+                    // PROJ坐标转换数据库所在目录。
+                    // 该目录中包含proj.db。
+                    "name": "PROJ_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/proj"
+                },
+                {
+                    // GDAL运行时数据文件所在目录。
+                    "name": "GDAL_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/gdal"
                 }
             ],
 
@@ -106,6 +128,17 @@
                     // 如果将来升级 OSG，目录中的版本号可能需要同步修改。
                     "name": "OSG_LIBRARY_PATH",
                     "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                },
+                {
+                    // PROJ坐标转换数据库所在目录。
+                    // 该目录中包含proj.db。
+                    "name": "PROJ_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/proj"
+                },
+                {
+                    // GDAL运行时数据文件所在目录。
+                    "name": "GDAL_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/gdal"
                 }
             ],
 
@@ -145,6 +178,17 @@
                     // 以及 osgEarth 的 Rex 地形引擎插件。
                     "name": "OSG_LIBRARY_PATH",
                     "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/debug/plugins/osgPlugins-3.6.5"
+                },
+                {
+                    // PROJ坐标转换数据库所在目录。
+                    // 该目录中包含proj.db。
+                    "name": "PROJ_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/proj"
+                },
+                {
+                    // GDAL运行时数据文件所在目录。
+                    "name": "GDAL_DATA",
+                    "value": "${workspaceFolder}/../build/vcpkg_installed/x64-windows/share/gdal"
                 }
             ],
 

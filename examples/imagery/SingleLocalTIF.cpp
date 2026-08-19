@@ -32,7 +32,7 @@ int main(int argc, char** argv)
     //     osgViewer::ViewerBase::SingleThreaded
     // );
 
-    const std::string imagePath ="D:/work/projects/HelloEarthWorkspace/testdata/ref.tif";
+    const std::string imagePath ="D:/download/Lianyungang/1_transparent_mosaic_group1.tif";
     std::string preparedImagePath;
     // if (!checkSingleImage(imagePath, preparedImagePath))
     // {

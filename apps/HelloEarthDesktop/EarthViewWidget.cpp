@@ -519,7 +519,7 @@ bool EarthViewWidget::addImageLayer(const QString& sourcePath)
         *layerViewpoint,
 
         // 相机飞行动画时间，单位为秒。
-        0.5
+        2.5
     );
 
     // 创建一个临时定时器，定期检查相机飞行动画是否完成。
@@ -865,7 +865,7 @@ bool EarthViewWidget::addElevationLayer(const QString& sourcePath)
         *layerViewpoint,
 
         // 相机飞行动画时间，单位为秒。
-        0.5
+        2.5
     );
 
     // 创建临时定时器，持续检查视点飞行动画是否结束。

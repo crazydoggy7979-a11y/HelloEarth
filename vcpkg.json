@@ -6,7 +6,12 @@
     "supports": "!(x86 | wasm32)",
     "dependencies": [
         "osgearth",
-        "gdal",
+        {
+            "name": "gdal",
+            "features": [
+                "tools"
+            ]
+        },
         {
             "name": "qtbase",
             "default-features": false,

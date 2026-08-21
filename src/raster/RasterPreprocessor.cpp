@@ -4,6 +4,7 @@
 #include <gdal_utils.h>
 #include <cpl_progress.h>
 #include <cpl_string.h>
+#include <cpl_conv.h>
 
 #include <filesystem>
 #include <iostream>
@@ -141,16 +142,45 @@ namespace HelloEarth::Raster
             // 对只读 GeoTIFF 调用 BuildOverviews，
             // GDAL 会创建外部 image.tif.ovr，
             // 而不是修改 TIFF 内部。
+            // 为原始 TIFF 的读取和解压配置多线程。
+            //
+            // 这个选项属于“打开数据集”的阶段，
+            // 与后面的 Overview压缩线程选项不是同一个东西。
+            char** rasterOpenOptions =
+                nullptr;
+
+            rasterOpenOptions =
+                CSLSetNameValue(
+                    rasterOpenOptions,
+                    "NUM_THREADS",
+                    "ALL_CPUS"
+                );
+
             GDALDataset* buildDataset =
                 static_cast<GDALDataset*>(
                     GDALOpenEx(
                         imagePath.c_str(),
                         GDAL_OF_RASTER | GDAL_OF_READONLY,
+
+                        // 不限制允许使用的 GDAL驱动。
                         nullptr,
-                        nullptr,
+
+                        // 将多线程读取选项传给 GeoTIFF驱动。
+                        rasterOpenOptions,
+
+                        // 不提供兄弟文件列表。
                         nullptr
                     )
                 );
+
+            // GDALOpenEx() 已经读取并保存了打开选项，
+            // 这里可以立即释放字符串列表。
+            CSLDestroy(
+                rasterOpenOptions
+            );
+
+            rasterOpenOptions =
+                nullptr;
 
             if (buildDataset == nullptr)
             {
@@ -164,6 +194,152 @@ namespace HelloEarth::Raster
 
             std::cout
                 << "Building external overviews..."
+                << std::endl;
+
+            // 创建传递给 GDAL Overview 构建流程的选项列表。
+            //
+            // char** 是 GDAL/CPL 经常使用的字符串列表类型。
+            // CSLSetNameValue() 会向列表中加入一项“名称=值”配置。
+            char** overviewCreationOptions =
+                nullptr;
+            
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "NUM_THREADS",
+                    "ALL_CPUS"
+                );
+
+            // 明确要求创建外部 Overview。
+            //
+            // 当前数据集以只读方式打开，本来就会创建外部 .ovr；
+            // 这里显式指定，可以让代码意图更加清楚。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "LOCATION",
+                    "EXTERNAL"
+                );
+            
+            // 使用速度优先的 DEFLATE 压缩等级。
+            //
+            // 1的压缩速度最快，但生成文件通常会比默认等级6稍大。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "ZLEVEL",
+                    "1"
+                );
+
+            // 使用 DEFLATE 无损压缩。
+            //
+            // 它不会改变像素值，也不会降低影像清晰度。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "COMPRESS",
+                    "DEFLATE"
+                );
+
+            // 使用 256×256 的瓦片块组织 OVR。
+            //
+            // osgEarth 通常也是按局部瓦片读取影像，
+            // 因此二维块结构比原图的整行条带更适合随机访问。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "BLOCKSIZE",
+                    "256"
+                );
+
+            // 多波段影像按照像素交错组织。
+            //
+            // 对 RGB、RGBA 影像来说，读取一个像素时，
+            // 其多个颜色波段可以存放在相邻位置。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "INTERLEAVE",
+                    "PIXEL"
+                );
+
+            // 当 OVR 可能超过传统 TIFF 的 4GB 限制时，
+            // 自动使用 BigTIFF。
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "BIGTIFF",
+                    "IF_SAFER"
+                );
+            
+            // 读取第一个波段的数据类型，
+            // 用它判断应该使用整数预测器还是浮点预测器。
+            GDALRasterBand* firstBand =
+                buildDataset->GetRasterBand(1);
+
+            if (firstBand == nullptr)
+            {
+                std::cerr
+                    << "Failed to obtain the first raster band "
+                    << "for overview compression configuration."
+                    << std::endl;
+
+                CSLDestroy(overviewCreationOptions);
+                overviewCreationOptions = nullptr;
+
+                GDALClose(buildDataset);
+                buildDataset = nullptr;
+
+                return false;
+            }
+
+            const GDALDataType rasterDataType =
+                firstBand->GetRasterDataType();
+
+            // 浮点型 DEM 使用 Predictor 3；
+            // Byte、UInt16、Int16 等整数影像使用 Predictor 2。
+            const bool usesFloatingPointSamples =
+                rasterDataType == GDT_Float32 ||
+                rasterDataType == GDT_Float64;
+
+            overviewCreationOptions =
+                CSLSetNameValue(
+                    overviewCreationOptions,
+                    "PREDICTOR",
+                    usesFloatingPointSamples
+                        ? "3"
+                        : "2"
+                );
+
+            // 保存调用本函数前的 GDAL线程配置。
+            //
+            // CPLGetThreadLocalConfigOption() 返回的字符指针由 GDAL管理，
+            // 后续修改配置可能会使其失效，因此需要立即复制到 std::string。
+            const char* previousThreadOption =
+                CPLGetThreadLocalConfigOption(
+                    "GDAL_NUM_THREADS",
+                    nullptr
+                );
+
+            const bool hadPreviousThreadOption =
+                previousThreadOption != nullptr;
+
+            const std::string previousThreadOptionValue =
+                hadPreviousThreadOption
+                    ? previousThreadOption
+                    : "";
+
+            // 让 GDAL在 Overview降采样阶段使用全部逻辑处理器。
+            //
+            // 这个配置负责读取、重采样和金字塔计算，
+            // 与创建选项中的 NUM_THREADS 不是同一个配置。
+            CPLSetThreadLocalConfigOption(
+                "GDAL_NUM_THREADS",
+                "ALL_CPUS"
+            );
+
+            std::cout
+                << "GDAL overview computation threads: ALL_CPUS"
                 << std::endl;
 
             const CPLErr buildResult =
@@ -189,8 +365,25 @@ namespace HelloEarth::Raster
                     nullptr,
 
                     // 暂时不设置额外的 Overview 创建选项。
-                    nullptr
+                    overviewCreationOptions
                 );
+            
+            // 恢复进入本函数前的线程配置，
+            // 避免影响后续其他 GDAL操作。
+            CPLSetThreadLocalConfigOption(
+                "GDAL_NUM_THREADS",
+                hadPreviousThreadOption
+                    ? previousThreadOptionValue.c_str()
+                    : nullptr
+            );
+            
+            // CSLSetNameValue() 创建的字符串列表需要手动释放。
+            CSLDestroy(
+                overviewCreationOptions
+            );
+
+            overviewCreationOptions =
+                nullptr;
 
             GDALClose(buildDataset);
             buildDataset = nullptr;

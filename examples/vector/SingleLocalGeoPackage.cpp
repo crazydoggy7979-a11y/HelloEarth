@@ -517,6 +517,68 @@ int main(int argc, char** argv)
         << geoPackageFeatureSource->getFeatureCount()
         << std::endl;
 
+    // 指定准备加载的第二个 GeoPackage 内部图层。
+    //
+    // 它和 ADM_ADM_1 位于同一个 .gpkg 文件中，
+    // 但对于 osgEarth 来说，它们是两个独立的矢量数据源。
+    const std::string secondTargetLayerName =
+        "ADM_ADM_2";
+
+    // 为第二个内部图层创建独立的 OGRFeatureSource。
+    auto secondGeoPackageFeatureSource =
+        new osgEarth::OGRFeatureSource();
+
+    // 设置 osgEarth 运行时使用的数据源名称。
+    secondGeoPackageFeatureSource->setName(
+        secondTargetLayerName
+    );
+
+    // 两个数据源指向同一个 GeoPackage 文件。
+    secondGeoPackageFeatureSource->setURL(
+        geoPackagePath
+    );
+
+    // 通过内部图层名称区分实际读取的内容。
+    secondGeoPackageFeatureSource->setLayer(
+        secondTargetLayerName
+    );
+
+    // 将第二个 FeatureSource 加入当前 Map，
+    // 触发 osgEarth 打开 ADM_ADM_2。
+    //
+    // FeatureSource 只负责提供矢量要素，
+    // 现在还没有创建对应的可见 FeatureImageLayer。
+    mapNode->getMap()->addLayer(
+        secondGeoPackageFeatureSource
+    );
+
+    // 检查第二个内部图层是否成功打开。
+    if (
+        secondGeoPackageFeatureSource
+            ->getStatus()
+            .isError()
+    )
+    {
+        std::cerr
+            << "Failed to open second GeoPackage feature layer: "
+            << secondGeoPackageFeatureSource
+                ->getStatus()
+                .toString()
+            << std::endl;
+
+        return -1;
+    }
+
+    std::cout
+        << "Second GeoPackage feature source opened successfully."
+        << std::endl
+        << "Second layer name: "
+        << secondTargetLayerName
+        << std::endl
+        << "Second layer feature count: "
+        << secondGeoPackageFeatureSource->getFeatureCount()
+        << std::endl;
+
     // 创建当前矢量图层独立使用的默认样式。
     //
     // 这套样式会同时包含点、线、面和贴地参数。
@@ -658,6 +720,133 @@ int main(int argc, char** argv)
 
     std::cout
         << "GeoPackage FeatureImageLayer created successfully."
+        << std::endl;
+    
+    // 为第二个内部图层创建独立样式。
+    //
+    // ADM_ADM_1 当前使用红色，
+    // ADM_ADM_2 使用蓝色，方便观察两个图层的叠加关系。
+    osgEarth::Style secondVectorStyle;
+
+    secondVectorStyle.setName(
+        "second_default"
+    );
+
+    const osgEarth::Color secondBaseColor(
+        0.15F,
+        0.45F,
+        0.95F,
+        1.00F
+    );
+
+    // 创建第二个图层的边界线样式。
+    auto secondLineSymbol =
+        secondVectorStyle.getOrCreate<
+            osgEarth::LineSymbol
+        >();
+
+    secondLineSymbol
+        ->stroke()
+        .mutable_value()
+        .color() =
+            secondBaseColor;
+
+    secondLineSymbol
+        ->stroke()
+        .mutable_value()
+        .width() =
+            osgEarth::Distance(
+                1.5,
+                osgEarth::Units::PIXELS
+            );
+
+    // 对跨度较大的边界线进行细分，
+    // 使其更自然地贴合地球曲面。
+    secondLineSymbol->tessellationSize() =
+        osgEarth::Distance(
+            25.0,
+            osgEarth::Units::KILOMETERS
+        );
+
+    // 创建第二个图层的面填充样式。
+    auto secondPolygonSymbol =
+        secondVectorStyle.getOrCreate<
+            osgEarth::PolygonSymbol
+        >();
+
+    // 使用较低透明度，避免完全遮挡下面的 ADM_ADM_1。
+    secondPolygonSymbol
+        ->fill()
+        .mutable_value()
+        .color() =
+            osgEarth::Color(
+                secondBaseColor.r(),
+                secondBaseColor.g(),
+                secondBaseColor.b(),
+                0.15F
+            );
+
+    // 创建第二个图层的贴地规则。
+    auto secondAltitudeSymbol =
+        secondVectorStyle.getOrCreate<
+            osgEarth::AltitudeSymbol
+        >();
+
+    secondAltitudeSymbol->clamping() =
+        osgEarth::AltitudeSymbol::CLAMP_TO_TERRAIN;
+
+    secondAltitudeSymbol->technique() =
+        osgEarth::AltitudeSymbol::TECHNIQUE_DRAPE;
+
+    // 为 ADM_ADM_2 创建独立的 StyleSheet。
+    auto secondStyleSheet =
+        new osgEarth::StyleSheet();
+
+    secondStyleSheet->addStyle(
+        secondVectorStyle
+    );
+
+    // 创建 ADM_ADM_2 对应的可见影像图层。
+    auto secondGeoPackageImageLayer =
+        new osgEarth::FeatureImageLayer();
+
+    secondGeoPackageImageLayer->setName(
+        secondTargetLayerName
+    );
+
+    // 使用前面已经成功打开的 ADM_ADM_2 数据源。
+    secondGeoPackageImageLayer->setFeatureSource(
+        secondGeoPackageFeatureSource
+    );
+
+    secondGeoPackageImageLayer->setStyleSheet(
+        secondStyleSheet
+    );
+
+    // 后加入的 FeatureImageLayer 位于前一个图层上方。
+    mapNode->getMap()->addLayer(
+        secondGeoPackageImageLayer
+    );
+
+    // 检查第二个可见图层是否成功创建。
+    if (
+        secondGeoPackageImageLayer
+            ->getStatus()
+            .isError()
+    )
+    {
+        std::cerr
+            << "Failed to create second GeoPackage image layer: "
+            << secondGeoPackageImageLayer
+                ->getStatus()
+                .toString()
+            << std::endl;
+
+        return -1;
+    }
+
+    std::cout
+        << "Second GeoPackage FeatureImageLayer created successfully."
         << std::endl;
 
     auto initialViewpoint =

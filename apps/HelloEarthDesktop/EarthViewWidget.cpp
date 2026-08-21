@@ -1683,6 +1683,10 @@ void EarthViewWidget::initializeGL()
     // 创建 osgEarth 地图场景的根节点。
     mapNode_ = new osgEarth::MapNode();
 
+    // 临时提高地形引擎允许细分的最高层级，
+    // 用于验证高分辨率影像发糊是否由默认 maxLOD=19 引起。
+    mapNode_->getTerrainOptions().setMaxLOD(20);
+
     // MapNode 创建完成后，它内部管理的 Map 也已经存在。
     //
     // getUID() 返回 osgEarth 为这个 Map 分配的运行时唯一编号。
@@ -1775,6 +1779,20 @@ void EarthViewWidget::resizeGL(int width, int height)
         framebufferWidth,
         framebufferHeight
     );
+
+    // // 明确同步相机 Viewport。
+    // if (
+    //     viewer_ &&
+    //     viewer_->getCamera()
+    // )
+    // {
+    //     viewer_->getCamera()->setViewport(
+    //         0,
+    //         0,
+    //         framebufferWidth,
+    //         framebufferHeight
+    //     );
+    // }
 
     // 同时向 OSG 的事件队列发送窗口尺寸变化事件。
     //

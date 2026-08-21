@@ -30,7 +30,7 @@ int main(int argc, char** argv)
     );
 
     const std::string demPath =
-        "D:/work/projects/HelloEarthWorkspace/testdata/dem.tif";
+        "D:/download/rasters_COP30/output_hh.tif";
 
     auto elevation =
         new osgEarth::GDALElevationLayer();
@@ -114,23 +114,23 @@ int main(int argc, char** argv)
         preparedImagePath
     );
 
-    mapNode->getMap()->addLayer(imagery);
+    // mapNode->getMap()->addLayer(imagery);
 
-    if (imagery->getStatus().isError()){
-        std::cerr
-            << "Failed to open image: "
-            << imagery->getStatus().toString()
-            << std::endl;
+    // if (imagery->getStatus().isError()){
+    //     std::cerr
+    //         << "Failed to open image: "
+    //         << imagery->getStatus().toString()
+    //         << std::endl;
 
-        return -1;
-    }
+    //     return -1;
+    // }
 
     HelloEarth::Navigation::InitialViewpointOptions viewpointOptions;
 
     // DEM 使用倾斜视角。
     viewpointOptions.pitchDegrees = -45.0;
 
-    auto initialViewpoint = HelloEarth::Navigation::calculateInitialViewpoint(*imagery, viewpointOptions);
+    auto initialViewpoint = HelloEarth::Navigation::calculateInitialViewpoint(*elevation, viewpointOptions);
     
     // 检查初始视点是否有效，如果无效则输出错误信息并退出程序。
     // 检查 optional 里面是否成功产生了 Viewpoint。

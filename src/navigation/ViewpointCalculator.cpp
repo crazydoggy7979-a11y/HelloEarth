@@ -10,7 +10,7 @@ namespace HelloEarth::Navigation
 {
     std::optional<osgEarth::Viewpoint>
     calculateInitialViewpoint(
-        const osgEarth::TileLayer& layer,
+        const osgEarth::GeoExtent& extent,
         const InitialViewpointOptions& options
     )
     {
@@ -32,10 +32,8 @@ namespace HelloEarth::Navigation
             return std::nullopt;
         }
 
-        // 获取图层所报告的全部数据范围的并集。
-        const osgEarth::DataExtent& extent =
-            layer.getDataExtentsUnion();
-
+        // 无论范围来自影像、DEM 还是矢量数据，
+        // 都必须先确认它包含有效的空间参考和坐标范围。
         if (!extent.isValid())
         {
             return std::nullopt;
@@ -121,5 +119,26 @@ namespace HelloEarth::Navigation
         }
 
         return viewpoint;
+    }
+
+    std::optional<osgEarth::Viewpoint>
+    calculateInitialViewpoint(
+        const osgEarth::TileLayer& layer,
+        const InitialViewpointOptions& options
+    )
+    {
+        // TileLayer 可能由一个或多个数据范围组成。
+        // getDataExtentsUnion() 会取得这些范围合并后的总体范围。
+        const osgEarth::DataExtent& extent =
+            layer.getDataExtentsUnion();
+
+        // 实际的视点计算统一交给 GeoExtent 基础版本。
+        //
+        // DataExtent 在 GeoExtent 的基础上增加了层级等信息，
+        // 因此可以作为 GeoExtent 传入基础计算函数。
+        return calculateInitialViewpoint(
+            extent,
+            options
+        );
     }
 }

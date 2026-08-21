@@ -103,7 +103,7 @@ int main(int argc, char** argv)
     // .shx、.dbf、.prj 和 .cpg 文件。
     const std::string shapefilePath =
         "D:/work/projects/HelloEarthWorkspace/testdata/SHP/"
-        "ne_110m_admin_0_countries.shp";
+        "a5bc0-main/china_SHP/省界_Project.shp";
 
     // OGRFeatureSource 负责读取矢量要素和属性数据。
     // 它相当于矢量数据的“数据提供者”，目前还不负责显示。
@@ -354,7 +354,7 @@ int main(int argc, char** argv)
     // FeatureModelLayer 负责把 FeatureSource 中的矢量要素
     // 转换成可以进入 OSG 场景并被 GPU 绘制的几何对象。
     auto countryLayer =
-        new osgEarth::FeatureImageLayer();
+        new osgEarth::FeatureModelLayer();
 
     // 设置可见图层名称。
     // 这个名称属于真正负责显示的图层。
@@ -402,7 +402,7 @@ int main(int argc, char** argv)
     // 方便后续观察覆盖在地表上的矢量数据。 
     viewpointOptions.pitchDegrees = -45.0;
 
-    auto initialViewpoint = HelloEarth::Navigation::calculateInitialViewpoint(*globalImagery, viewpointOptions);
+    auto initialViewpoint = HelloEarth::Navigation::calculateInitialViewpoint(featureExtent, viewpointOptions);
     
     // 检查初始视点是否有效，如果无效则输出错误信息并退出程序。
     // 检查 optional 里面是否成功产生了 Viewpoint。
